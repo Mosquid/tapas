@@ -35,6 +35,18 @@ func TestCLIHelperProcess(t *testing.T) {
 	os.Exit(2)
 }
 
+func TestVersionCommand(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestCLIHelperProcess", "--", "version")
+	cmd.Env = append(os.Environ(), "TAPAS_TEST_HELPER=1")
+	out, e := cmd.Output()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if string(out) != "tapas dev\n" {
+		t.Fatalf("unexpected version output: %q", out)
+	}
+}
+
 func TestCLIEntryLifecycle(t *testing.T) {
 	s := testutil.Vault(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

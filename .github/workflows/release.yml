@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to build
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, build, and release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SOPS_VERSION: "3.8.1"
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install test dependency
+        run: |
+          asset="sops-v${SOPS_VERSION}.linux.amd64"
+          curl -fsSLo "$asset" "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/$asset"
+          curl -fsSLo sops-checksums.txt "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.checksums.txt"
+          grep " $asset$" sops-checksums.txt | sha256sum --check --strict
+          chmod +x "$asset"
+          mv "$asset" sops
+          echo "$PWD" >> "$GITHUB_PATH"
+
+      - name: Test
+        run: |
+          go test -race ./...
+          go vet ./...
+
+      - name: Build release archives
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -eu
+          case "$RELEASE_TAG" in
+            v*) version=${RELEASE_TAG#v} ;;
+            *) echo "release tag must start with v" >&2; exit 1 ;;
+          esac
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="tapas-${os}-${arch}"
+            mkdir -p "dist/$name/skills/agent-secrets"
+            GOOS=$os GOARCH=$arch go build \
+              -trimpath \
+              -ldflags="-s -w -X main.version=$version" \
+              -o "dist/$name/tapas" \
+              ./cmd/tapas
+            cp skills/agent-secrets/SKILL.md "dist/$name/skills/agent-secrets/SKILL.md"
+            cp README.md "dist/$name/README.md"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            rm -rf "dist/$name"
+          done
+          cd dist
+          sha256sum tapas-*.tar.gz > checksums.txt
+
+      - name: Smoke-test installer against packaged artifact
+        run: |
+          set -eu
+          test_root=$(mktemp -d)
+          TAPAS_ASSET_BASE_URL="file://$PWD/dist" \
+          TAPAS_INSTALL_DIR="$test_root/bin with spaces" \
+          TAPAS_SKILL_DIR="$test_root/skill with spaces" \
+            sh ./install.sh
+          "$test_root/bin with spaces/tapas" version | grep -Fx "tapas ${RELEASE_TAG#v}"
+          test -f "$test_root/skill with spaces/SKILL.md"
+
+          bad_release=$(mktemp -d)
+          cp "dist/tapas-linux-amd64.tar.gz" "$bad_release/"
+          printf '%064d  %s\n' 0 tapas-linux-amd64.tar.gz > "$bad_release/checksums.txt"
+          printf '%s\n' '#!/bin/sh' 'echo preserved' > "$test_root/bin with spaces/tapas"
+          chmod +x "$test_root/bin with spaces/tapas"
+          if TAPAS_ASSET_BASE_URL="file://$bad_release" \
+             TAPAS_INSTALL_DIR="$test_root/bin with spaces" \
+             TAPAS_SKILL_DIR="$test_root/skill with spaces" \
+               sh ./install.sh; then
+            echo "installer accepted a bad checksum" >&2
+            exit 1
+          fi
+          "$test_root/bin with spaces/tapas" | grep -Fx preserved
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tapas-${{ env.RELEASE_TAG }}
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(env.RELEASE_TAG, 'v')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
