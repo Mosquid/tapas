@@ -11,32 +11,71 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"tapas/internal/entry"
+	"tapas/internal/runner"
 	"tapas/internal/vault"
 )
 
 func emit(v any) { _ = json.NewEncoder(os.Stdout).Encode(v) }
-func main() {
-	if e := run(); e != nil {
-		emit(map[string]string{"status": "failed", "error": e.Error()})
-		os.Exit(1)
+
+// childStatus carries a completed child process exit code. The child already
+// reported itself, so the wrapper adds no event of its own.
+type childStatus int
+
+func (c childStatus) Error() string { return "child exited with status " + strconv.Itoa(int(c)) }
+
+// request pairs an optional target variable with a credential reference.
+// It never holds a secret value.
+type request struct{ variable, reference string }
+
+// refList collects repeated --ref values of the form REF or VARIABLE=REF.
+type refList []request
+
+func (l *refList) String() string { return "" }
+func (l *refList) Set(v string) error {
+	variable, reference, named := strings.Cut(v, "=")
+	if !named {
+		variable, reference = "", v
 	}
+	*l = append(*l, request{variable: variable, reference: reference})
+	return nil
+}
+
+func main() {
+	e := run()
+	if e == nil {
+		return
+	}
+	var status childStatus
+	if errors.As(e, &status) {
+		os.Exit(int(status))
+	}
+	emit(map[string]string{"status": "failed", "error": e.Error()})
+	os.Exit(1)
 }
 func run() error {
 	if len(os.Args) == 2 && (os.Args[1] == "--help" || os.Args[1] == "help" || os.Args[1] == "-h") {
-		_, _ = io.WriteString(os.Stdout, "Usage: tapas <command> [options]\n\nCommands:\n  init       Create an identity and encrypted JSON vault\n  discover   List metadata without decrypting values\n  serve      Open a single-use browser form, save, and exit\n\nUse tapas <command> --help for options. Secret values are accepted only in the browser.\n")
+		_, _ = io.WriteString(os.Stdout, usage)
 		return nil
 	}
 	if len(os.Args) < 2 {
-		return errors.New("usage: tapas init|discover|serve [options]; use --help for flags")
+		return errors.New("usage: tapas init|list|add|run [options]; use --help for flags")
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	path := fs.String("store", "vault.sops.json", "encrypted JSON path")
-	name := fs.String("name", "", "logical store name (init), or suggested credential name (serve)")
+	// The personal vault is reachable from any working directory. A project that
+	// wants its own vault passes --store explicitly.
+	storeDefault := "vault.sops.json"
+	if dir, e := os.UserConfigDir(); e == nil {
+		storeDefault = filepath.Join(dir, "tapas", "vault.sops.json")
+	}
+	path := fs.String("store", storeDefault, "encrypted JSON path")
+	name := fs.String("name", "", "logical store name (init), or suggested credential name (add)")
 	recipient := fs.String("age", "", "existing age public recipient (init)")
 	identity := fs.String("identity", "", "age identity path (defaults to the Agent Secrets user config directory)")
 	service := fs.String("service", "", "suggested service")
@@ -47,6 +86,9 @@ func run() error {
 	replace := fs.String("replace", "", "exact credential ID to replace; browser confirmation required")
 	ttl := fs.Duration("ttl", 5*time.Minute, "form lifetime, at most 5m")
 	open := fs.Bool("open", true, "open the default browser")
+	asJSON := fs.Bool("json", false, "print JSON even when the output is a terminal (list)")
+	var refs refList
+	fs.Var(&refs, "ref", "credential to deliver as VARIABLE=REF or REF (run; repeatable)")
 	if e := fs.Parse(os.Args[2:]); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
 			fs.SetOutput(os.Stdout)
@@ -55,7 +97,7 @@ func run() error {
 		}
 		return errors.New("invalid arguments; use --help (secret values are accepted only in the browser)")
 	}
-	if fs.NArg() != 0 {
+	if fs.NArg() != 0 && os.Args[1] != "run" {
 		return errors.New("unexpected positional arguments")
 	}
 	if *identity == "" {
@@ -94,13 +136,9 @@ func run() error {
 			return e
 		}
 		emit(map[string]any{"status": "initialized", "store": *name, "identity": *identity, "identity_created": generatedIdentity})
-	case "discover":
-		snap, e := s.Discover()
-		if e != nil {
-			return e
-		}
-		emit(snap)
-	case "serve":
+	case "list", "discover":
+		return listCredentials(s, *asJSON)
+	case "serve", "add":
 		server, e := entry.Start(s, entry.Options{Metadata: vault.Metadata{Name: *name, Description: *description, Service: *service, Environment: *environment, SuggestedEnv: *env}, Reason: *reason, Replace: *replace, TTL: *ttl})
 		if e != nil {
 			return e
@@ -122,8 +160,67 @@ func run() error {
 		if result.Status == "failed" {
 			return errors.New("server failed")
 		}
+	case "run":
+		if len(refs) == 0 {
+			return errors.New("provide at least one --ref; run tapas list for exact references")
+		}
+		// Reject an unusable target before decrypting anything.
+		for _, r := range refs {
+			if r.variable != "" {
+				if e := vault.ValidateVariable(r.variable); e != nil {
+					return e
+				}
+			}
+		}
+		bindings := make([]runner.Binding, 0, len(refs))
+		for _, r := range refs {
+			resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			m, value, e := s.Resolve(resolveCtx, r.reference)
+			cancel()
+			if e != nil {
+				return e
+			}
+			name := r.variable
+			if name == "" {
+				name = m.SuggestedEnv
+			}
+			if name == "" {
+				return errors.New("credential " + m.ID + " suggests no variable; pass --ref VARIABLE=" + r.reference)
+			}
+			if e = vault.ValidateVariable(name); e != nil {
+				return e
+			}
+			for _, b := range bindings {
+				if b.Variable == name {
+					return errors.New("two credentials target " + name + "; name each one explicitly")
+				}
+			}
+			bindings = append(bindings, runner.Binding{Variable: name, Value: value})
+		}
+		status, e := runner.Exec(ctx, fs.Args(), bindings, os.Stdout, os.Stderr)
+		if e != nil {
+			return e
+		}
+		if status != 0 {
+			return childStatus(status)
+		}
 	default:
-		return errors.New("unknown command; use init, discover, or serve")
+		return errors.New("unknown command; use init, list, add, or run")
 	}
 	return nil
 }
+
+const usage = `Usage: tapas <command> [options]
+
+Vault
+  init   Create an identity and encrypted JSON vault
+  list   Show credential metadata; never decrypts (alias: discover)
+  add    Open a single-use browser form, save, and exit (alias: serve)
+
+Using a credential
+  run    Run one command with credentials in its environment only
+
+Use tapas <command> --help for options.
+Secret values are accepted only in the browser, and are never printed by list
+or any error message.
+`

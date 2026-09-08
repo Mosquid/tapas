@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,5 +105,51 @@ func TestCLIEntryLifecycle(t *testing.T) {
 	}
 	if final.Ref != "store:test/"+snap.Credentials[0].ID {
 		t.Fatal("CLI returned wrong reference")
+	}
+}
+
+func TestCLIRunDeliversCredentialAndExitStatus(t *testing.T) {
+	s := testutil.Vault(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	snap, e := s.Discover()
+	if e != nil {
+		t.Fatal(e)
+	}
+	secret := "synthetic-" + vault.Token()
+	ref, e := s.Save(ctx, snap.Revision, vault.Metadata{Name: "Fixture", Service: "fixture", Environment: "development", SuggestedEnv: "API_TOKEN"}, secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	helper := func(args ...string) (string, string, int) {
+		t.Helper()
+		full := append([]string{"-test.run=TestCLIHelperProcess", "--", "run", "--store", s.Path, "--identity", s.IdentityFile}, args...)
+		cmd := exec.CommandContext(ctx, os.Args[0], full...)
+		cmd.Env = append(os.Environ(), "TAPAS_TEST_HELPER=1")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		e := cmd.Run()
+		var exit *exec.ExitError
+		if e != nil && !errors.As(e, &exit) {
+			t.Fatal(e)
+		}
+		return stdout.String(), stderr.String(), cmd.ProcessState.ExitCode()
+	}
+	out, errorOutput, status := helper("--ref", ref, "--", "sh", "-c", `test -n "$API_TOKEN" && printf 'token %s\n' "$API_TOKEN"`)
+	if status != 0 || out != "token [redacted]\n" || errorOutput != "" {
+		t.Fatal("suggested variable not delivered or not redacted:", out, errorOutput, status)
+	}
+	if out, _, status = helper("--ref", "OTHER_TOKEN="+ref, "--", "sh", "-c", `printf '%s\n' "${API_TOKEN:-unset} ${#OTHER_TOKEN}"`); status != 0 || out != "unset "+strconv.Itoa(len(secret))+"\n" {
+		t.Fatal("explicit variable binding failed:", out, status)
+	}
+	if _, _, status = helper("--ref", ref, "--", "sh", "-c", "exit 7"); status != 7 {
+		t.Fatal("child exit status not preserved:", status)
+	}
+	if out, _, status = helper("--ref", "PATH="+ref, "--", "true"); status != 1 || !strings.Contains(out, "unsupported environment variable") {
+		t.Fatal("runtime-control variable not rejected:", out, status)
+	}
+	if out, _, status = helper("--ref", "store:test/missing", "--", "true"); status != 1 || strings.Contains(out, secret) {
+		t.Fatal("unknown reference not reported:", out, status)
 	}
 }

@@ -147,3 +147,57 @@ func TestManagedIdentity(t *testing.T) {
 		t.Fatal("existing identity overwritten")
 	}
 }
+
+func TestResolveReturnsExactReferenceOnly(t *testing.T) {
+	s := testutil.Vault(t)
+	ctx := context.Background()
+	snap, e := s.Discover()
+	if e != nil {
+		t.Fatal(e)
+	}
+	secret := "synthetic-" + vault.Token()
+	ref, e := s.Save(ctx, snap.Revision, metadata(), secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m, value, e := s.Resolve(ctx, ref)
+	if e != nil || value != secret || m.SuggestedEnv != "API_TOKEN" {
+		t.Fatal("resolve returned the wrong credential", e)
+	}
+	if _, _, e = s.Resolve(ctx, strings.TrimPrefix(ref, "store:test/")); e != nil {
+		t.Fatal("a bare identifier should resolve", e)
+	}
+	if _, _, e = s.Resolve(ctx, "store:other/"+m.ID); e == nil {
+		t.Fatal("a foreign store name must be rejected")
+	}
+	if _, _, e = s.Resolve(ctx, "Fixture"); e == nil {
+		t.Fatal("names must not resolve; only identifiers")
+	}
+	if _, _, e = s.Resolve(ctx, "../../etc/passwd"); e == nil {
+		t.Fatal("invalid references must be rejected")
+	}
+}
+
+func TestInitCreatesMissingStoreDirectory(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "identity.txt")
+	recipient, e := vault.GenerateIdentity(key)
+	if e != nil {
+		t.Fatal(e)
+	}
+	nested := filepath.Join(dir, "config", "tapas", "vault.sops.json")
+	s, e := vault.New(nested, key)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.Init(context.Background(), "personal", recipient); e != nil {
+		t.Fatal(e)
+	}
+	info, e := os.Stat(filepath.Dir(nested))
+	if e != nil || info.Mode().Perm() != 0700 {
+		t.Fatal("store directory missing or world readable", e)
+	}
+	if _, e = s.Discover(); e != nil {
+		t.Fatal(e)
+	}
+}
