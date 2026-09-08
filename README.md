@@ -32,6 +32,35 @@ tapas version
 tapas init --name personal
 ```
 
+### Install the Claude Code skill
+
+The standard installer installs both the `tapas` executable and the Agent
+Secrets skill. By default, the skill is written to:
+
+```text
+~/.claude/skills/agent-secrets/SKILL.md
+```
+
+Start a new Claude Code session after installation if `/agent-secrets` does
+not appear among the available skills. Claude can invoke the skill
+automatically when a task needs a credential, or you can invoke it directly:
+
+```text
+/agent-secrets
+```
+
+To install or update only the skill, without running the binary installer:
+
+```sh
+mkdir -p "$HOME/.claude/skills/agent-secrets"
+curl -fsSL \
+  https://raw.githubusercontent.com/Mosquid/tapas/main/skills/agent-secrets/SKILL.md \
+  -o "$HOME/.claude/skills/agent-secrets/SKILL.md"
+```
+
+The skill expects `tapas` and SOPS to be available on `PATH`; installing the
+skill alone does not install either executable or initialize a vault.
+
 ## Build and prerequisites
 
 Requires Go 1.27.1 to build, plus `sops` on PATH at runtime. Currently tested with SOPS 3.8.1 on macOS arm64. The age library is compiled into the executable and creates identities; users do not install an `age` command.
