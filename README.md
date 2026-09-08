@@ -1,6 +1,6 @@
-# Agent Secrets — vault and temporary entry server
+# Agent Secrets — vault, temporary entry server, and credential runner
 
-First implementation slice: a local SOPS vault and a browser process that saves one credential, then exits. `tapas` is the provisional executable name.
+First implementation slice: a local SOPS vault, a browser process that saves one credential and exits, and a runner that delivers a stored credential to one child command. `tapas` is the provisional executable name.
 
 The executable embeds the form and styles. The intended product distribution remains npm and `curl | sh`; release packaging and harness adapters are later slices. These commands are for developing and trying the current implementation.
 
@@ -12,13 +12,17 @@ Requires Go 1.27.1 to build, plus `sops` on PATH at runtime. Currently tested wi
 go build -o bin/tapas ./cmd/tapas
 ```
 
-`init` creates an age identity automatically. By default it lives in the OS user configuration directory, separate from the project and encrypted vault. The output names its exact path because this recovery-critical private key should be backed up. Never paste it or provider secrets into chat.
+`init` creates an age identity automatically. By default it lives in the OS user configuration directory, beside the personal vault. The output names its exact path because this recovery-critical private key should be backed up. Never paste it or provider secrets into chat.
 
 ## Initialize a vault
 
 ```sh
-bin/tapas init --store vault.sops.json --name personal
+bin/tapas init --name personal
 ```
+
+`--store` defaults to `vault.sops.json` inside the `tapas` directory of the OS user configuration directory, so one personal vault is reachable from any working directory. Pass `--store <path>` for a project vault instead. `init` creates a missing parent directory with owner-only permissions.
+
+The personal vault sits in the same directory as the age identity. Their separation matters when the encrypted file travels: keep a project vault out of the directory that holds the key, and never commit the identity. A user who wants to sync an encrypted vault should place it elsewhere with `--store`.
 
 Initialization generates the private identity with owner-only file permissions, encrypts an empty vault, and verifies decryption access before committing it. Existing identity and vault files are never overwritten. If vault initialization fails after generating an identity, that newly generated file is removed.
 
@@ -30,7 +34,7 @@ bin/tapas init \
   --identity /private/tmp/tapas-demo-identity.txt \
   --name demo
 
-bin/tapas serve \
+bin/tapas add \
   --store /private/tmp/tapas-demo-vault.sops.json \
   --identity /private/tmp/tapas-demo-identity.txt \
   --name github-development \
@@ -49,7 +53,7 @@ This slice supports a strict JSON schema and exactly one age recipient. YAML, KM
 ## Add a credential
 
 ```sh
-bin/tapas serve --store vault.sops.json \
+bin/tapas add \
   --name development-api \
   --service example \
   --environment development \
@@ -63,14 +67,27 @@ Enter the value in the masked browser field. Save returns a final JSON `saved` e
 
 Validation or encryption errors are shown in the browser without echoing the value. Use Back to correct input; for a revision conflict, cancel and reopen a fresh form. No secret value is accepted through CLI arguments, and there is no command that prints decrypted values.
 
-## Discover and replace
+## Use a credential
 
 ```sh
-bin/tapas discover --store vault.sops.json
-bin/tapas serve --store vault.sops.json --replace CREDENTIAL_ID
+bin/tapas run --ref store:personal/CREDENTIAL_ID -- gh repo list
+bin/tapas run --ref GH_TOKEN=store:personal/CREDENTIAL_ID -- ./deploy.sh
 ```
 
-Discovery returns the logical store, encrypted-file revision, and credential metadata, without decrypting. Use the exact `id` from discovery for replacement. The form identifies the affected entry and requires a confirmation checkbox. The ID stays stable if the user renames the entry. Duplicate names cannot overwrite an existing entry through the addition flow.
+`run` decrypts in memory, places the value in the environment of exactly one child process, and returns that child's exit status. Bare `--ref REF` uses the credential's `suggested_env`; `--ref VARIABLE=REF` overrides it. Repeat `--ref` for several credentials; two credentials may not target the same variable. Values are never passed as process arguments, and the parent shell never receives them.
+
+The runner removes exact occurrences of each delivered value from the child's stdout and stderr, across write boundaries. It does not decode transformed copies such as base64, and it does not see output the child writes directly to a terminal, a file, or a network destination. Because a short tail is held back to catch a split value, `run` suits non-interactive commands.
+
+References resolve by ID only. A renamed entry keeps its reference, and a reused name never resolves to a different secret. There is still no command that prints a decrypted value.
+
+## List and replace
+
+```sh
+bin/tapas list
+bin/tapas add --replace CREDENTIAL_ID
+```
+
+`list` returns the logical store, encrypted-file revision, and credential metadata, without decrypting. Use the exact `id` from `list` for replacement. The form identifies the affected entry and requires a confirmation checkbox. The ID stays stable if the user renames the entry. Duplicate names cannot overwrite an existing entry through the addition flow.
 
 ## Storage and lifecycle guarantees
 
@@ -78,12 +95,26 @@ Discovery returns the logical store, encrypted-file revision, and credential met
 - Decryption and re-encryption use memory and private SOPS pipes. The store is decrypted on save, not kept decrypted while the form waits.
 - Saves hold a cross-process lock and compare the form's original revision. Concurrent writers using this tool cannot lose updates. Any change since opening the form produces a conflict.
 - Updates validate the newly encrypted document by decrypting it in memory, stage only encrypted bytes beside the destination, flush, and atomically replace the file. New files and staging files use owner-only permissions.
-- A crash before replacement leaves the original intact; a crash after replacement may have saved successfully even if no final event reached the caller. Check discovery before retrying. A crash may leave an encrypted staging file; never a tool-created plaintext staging file.
+- A crash before replacement leaves the original intact; a crash after replacement may have saved successfully even if no final event reached the caller. Check `list` before retrying. A crash may leave an encrypted staging file; never a tool-created plaintext staging file.
 - The `.lock` file deliberately remains so concurrent processes share one lock inode. Locks are released by the OS when a process dies. Non-cooperating external editors are outside the locking guarantee.
 - The HTTP server binds to `127.0.0.1` on a random port. It validates token, Host, and Origin; rejects cross-origin writes and replay; limits request sizes; disables caching; and serves no external scripts or assets.
-- The form has no JavaScript, analytics, browser storage, or request-body logging. Exact runtime-control environment variable names/prefixes are rejected by `Metadata.Validate`; no environment injection is implemented in this slice.
+- The form has no JavaScript, analytics, browser storage, or request-body logging. Exact runtime-control environment variable names and prefixes are rejected by `vault.ValidateVariable`, both for suggested metadata and for `run` targets.
+- `run` delivers values only to the environment of the single child process it starts. It does not modify the parent shell, other tool calls, or an already running server. Transparent harness hooks are not implemented in this slice.
 
-This is not isolation from arbitrary code running as your user. RAM erasure is not guaranteed. Agent session claims, detached request/status persistence, output redaction, and CLI hooks remain future work. No personal vault or identity is created by building or testing the repository.
+This is not isolation from arbitrary code running as your user. RAM erasure is not guaranteed. Agent session claims, detached request/status persistence, transparent harness hooks, and native `CLAUDE_ENV_FILE` delivery remain future work; `run` is the explicit runner path. No personal vault or identity is created by building or testing the repository.
+
+## Claude Code skill
+
+`skills/agent-secrets/SKILL.md` instructs an agent to list before asking, to use exact references, to open the browser form for a missing credential, and to run credential-bearing commands through `tapas run`. The skill exists so that a session working on any project reaches for the vault instead of asking for a value in chat.
+
+It therefore belongs in the personal skill directory, not in this repository's project scope:
+
+```sh
+ln -s "$PWD/skills/agent-secrets" ~/.claude/skills/agent-secrets
+ln -s "$PWD/bin/tapas" ~/.local/bin/tapas
+```
+
+The symlinks keep one source file and one build. A rebuild of `bin/tapas` takes effect immediately. Sessions started before the link was created do not see the skill; restart them. A released package will install both; `tapas init` does not install them yet.
 
 ## Verify
 
@@ -92,6 +123,6 @@ go test -race ./...
 go vet ./...
 ```
 
-Tests require SOPS and permission to bind loopback ports. They create disposable age identities and synthetic credentials in temporary directories. Coverage includes encrypted round trips, rename/replacement, unchanged originals on failure, duplicate-key rejection, concurrent saves, HTTP token/Host/Origin checks, escaped metadata, replay rejection, cancellation, expiry, and listener shutdown. Browser layout has not yet been manually verified in a graphical browser.
+Tests require SOPS and permission to bind loopback ports. They create disposable age identities and synthetic credentials in temporary directories. Coverage includes encrypted round trips, rename/replacement, unchanged originals on failure, duplicate-key rejection, concurrent saves, HTTP token/Host/Origin checks, escaped metadata, replay rejection, cancellation, expiry, listener shutdown, reference resolution by ID, split-write redaction, child environment delivery, and child exit status. Browser layout has not yet been manually verified in a graphical browser.
 
 In a restricted development sandbox, point `GOCACHE` and `GOPATH` at writable directories if needed. This does not affect the installed binary.

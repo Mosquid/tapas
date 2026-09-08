@@ -133,8 +133,16 @@ func (m Metadata) Validate() error {
 			return errors.New("metadata is invalid or too long")
 		}
 	}
-	n := m.SuggestedEnv
-	if n != "" && (!variable.MatchString(n) || len(n) > 128 || n == "PATH" || n == "HOME" || n == "ENV" || n == "BASH_ENV" || n == "SHELLOPTS" || n == "BASHOPTS" || n == "CDPATH" || n == "IFS" || strings.HasPrefix(n, "LD_") || strings.HasPrefix(n, "DYLD_") || strings.HasPrefix(n, "PYTHON") || strings.HasPrefix(n, "NODE_") || strings.HasPrefix(n, "SOPS_") || strings.HasPrefix(n, "TAPAS_")) {
+	if m.SuggestedEnv != "" {
+		return ValidateVariable(m.SuggestedEnv)
+	}
+	return nil
+}
+
+// ValidateVariable rejects names that control the runtime of the receiving
+// process rather than naming an ordinary credential variable.
+func ValidateVariable(n string) error {
+	if !variable.MatchString(n) || len(n) > 128 || n == "PATH" || n == "HOME" || n == "ENV" || n == "BASH_ENV" || n == "SHELLOPTS" || n == "BASHOPTS" || n == "CDPATH" || n == "IFS" || strings.HasPrefix(n, "LD_") || strings.HasPrefix(n, "DYLD_") || strings.HasPrefix(n, "PYTHON") || strings.HasPrefix(n, "NODE_") || strings.HasPrefix(n, "SOPS_") || strings.HasPrefix(n, "TAPAS_") {
 		return errors.New("unsupported environment variable name")
 	}
 	return nil
@@ -374,6 +382,9 @@ func (s *Store) Init(ctx context.Context, name, recipient string) error {
 	if !identifier.MatchString(name) || !strings.HasPrefix(recipient, "age1") {
 		return errors.New("provide a logical store name and an age public recipient")
 	}
+	if e := os.MkdirAll(filepath.Dir(s.Path), 0700); e != nil {
+		return errors.New("cannot create the store directory")
+	}
 	unlock, e := s.lock(ctx)
 	if e != nil {
 		return e
@@ -483,4 +494,50 @@ func (s *Store) Save(ctx context.Context, revision string, m Metadata, value, re
 		return "", e
 	}
 	return "store:" + d.Store + "/" + m.ID, nil
+}
+
+// Resolve decrypts the store in memory and returns one credential by exact
+// reference. It matches on ID only: a renamed entry keeps its reference, and a
+// reused name never resolves to a different secret. Callers must not log,
+// persist, or pass the returned value as a process argument.
+func (s *Store) Resolve(ctx context.Context, ref string) (Metadata, string, error) {
+	b, e := s.read()
+	if e != nil {
+		return Metadata{}, "", e
+	}
+	if _, e = decode(b, true); e != nil {
+		return Metadata{}, "", e
+	}
+	plain, e := s.crypt(ctx, b, "")
+	if e != nil {
+		return Metadata{}, "", e
+	}
+	d, e := decode(plain, false)
+	if e != nil {
+		return Metadata{}, "", e
+	}
+	id, e := parseRef(ref, d.Store)
+	if e != nil {
+		return Metadata{}, "", e
+	}
+	for _, c := range d.Credentials {
+		if c.ID == id {
+			return c.Metadata, c.Value, nil
+		}
+	}
+	return Metadata{}, "", errors.New("no credential with that reference; run discover for exact references")
+}
+
+func parseRef(ref, store string) (string, error) {
+	if rest, found := strings.CutPrefix(ref, "store:"); found {
+		name, id, split := strings.Cut(rest, "/")
+		if !split || name != store {
+			return "", errors.New("reference names a different store")
+		}
+		ref = id
+	}
+	if !identifier.MatchString(ref) {
+		return "", errors.New("invalid credential reference")
+	}
+	return ref, nil
 }
