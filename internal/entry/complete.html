@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · Agent Secrets</title>
+  <style nonce="{{.Nonce}}">{{.Style}}</style>
+</head>
+<body>
+  <main class="complete-shell">
+    <section class="complete-card" aria-labelledby="complete-title">
+      <div class="success-icon" aria-hidden="true">{{.Icon}}</div>
+      <h1 id="complete-title">{{.Title}}</h1>
+      <p id="close-message" aria-live="polite"><span id="closing-copy">Finishing</span> <span class="countdown" id="countdown" hidden>3</span><span id="seconds" hidden> seconds</span></p>
+      <p class="fallback" id="fallback" hidden>You can close this tab now</p>
+      <div class="complete-meta">{{.Detail}}</div>
+    </section>
+  </main>
+  <script nonce="{{.Nonce}}">{{.Script}}</script>
+</body>
+</html>
