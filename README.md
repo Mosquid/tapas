@@ -2,7 +2,35 @@
 
 First implementation slice: a local SOPS vault, a browser process that saves one credential and exits, and a runner that delivers a stored credential to one child command. `tapas` is the provisional executable name.
 
-The executable embeds the form and styles. The intended product distribution remains npm and `curl | sh`; release packaging and harness adapters are later slices. These commands are for developing and trying the current implementation.
+The executable embeds the form and styles. Tagged releases provide macOS and
+Linux binaries for arm64 and amd64, along with the Claude Code skill. npm
+packaging and harness adapters remain later slices.
+
+## Install
+
+Install the latest release for the current platform without Node or `sudo`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | sh
+```
+
+The installer verifies the release archive against its SHA-256 manifest,
+installs `tapas` to `~/.local/bin`, and installs the skill to
+`~/.claude/skills/agent-secrets`. Both locations can be overridden, and a
+specific release can be pinned:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | \
+  sh -s -- --version v0.1.0 --install-dir "$HOME/bin"
+```
+
+The installer never uses `sudo`. Ensure the selected binary directory is on
+`PATH`, install SOPS, then initialize the vault:
+
+```sh
+tapas version
+tapas init --name personal
+```
 
 ## Build and prerequisites
 

@@ -21,6 +21,10 @@ import (
 	"tapas/internal/vault"
 )
 
+// version is set from the release tag with -ldflags. Development builds keep
+// an explicit value so their provenance is not mistaken for a release.
+var version = "dev"
+
 func emit(v any) { _ = json.NewEncoder(os.Stdout).Encode(v) }
 
 // childStatus carries a completed child process exit code. The child already
@@ -59,6 +63,10 @@ func main() {
 	os.Exit(1)
 }
 func run() error {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		_, _ = io.WriteString(os.Stdout, "tapas "+version+"\n")
+		return nil
+	}
 	if len(os.Args) == 2 && (os.Args[1] == "--help" || os.Args[1] == "help" || os.Args[1] == "-h") {
 		_, _ = io.WriteString(os.Stdout, usage)
 		return nil
@@ -211,6 +219,8 @@ func run() error {
 }
 
 const usage = `Usage: tapas <command> [options]
+
+  version  Print the installed version
 
 Vault
   init   Create an identity and encrypted JSON vault
