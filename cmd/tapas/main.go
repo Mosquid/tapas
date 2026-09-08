@@ -64,7 +64,11 @@ func run() error {
 		return nil
 	}
 	if len(os.Args) < 2 {
-		return errors.New("usage: tapas init|list|add|run [options]; use --help for flags")
+		return errors.New("usage: tapas list|add|run|request|release|status [options]; use --help for flags")
+	}
+	executable, e := os.Executable()
+	if e != nil {
+		return errors.New("cannot determine this executable's path")
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -75,7 +79,7 @@ func run() error {
 		storeDefault = filepath.Join(dir, "tapas", "vault.sops.json")
 	}
 	path := fs.String("store", storeDefault, "encrypted JSON path")
-	name := fs.String("name", "", "logical store name (init), or suggested credential name (add)")
+	name := fs.String("name", "", "logical store name (init), or suggested credential name (serve)")
 	recipient := fs.String("age", "", "existing age public recipient (init)")
 	identity := fs.String("identity", "", "age identity path (defaults to the Agent Secrets user config directory)")
 	service := fs.String("service", "", "suggested service")
@@ -87,8 +91,10 @@ func run() error {
 	ttl := fs.Duration("ttl", 5*time.Minute, "form lifetime, at most 5m")
 	open := fs.Bool("open", true, "open the default browser")
 	asJSON := fs.Bool("json", false, "print JSON even when the output is a terminal (list)")
+	all := fs.Bool("all", false, "release every claim held by this session (release)")
+	print := fs.Bool("print", false, "print the settings block instead of writing it (install-hooks)")
 	var refs refList
-	fs.Var(&refs, "ref", "credential to deliver as VARIABLE=REF or REF (run; repeatable)")
+	fs.Var(&refs, "ref", "credential to deliver as VARIABLE=REF or REF (run, request; repeatable)")
 	if e := fs.Parse(os.Args[2:]); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
 			fs.SetOutput(os.Stdout)
@@ -97,8 +103,20 @@ func run() error {
 		}
 		return errors.New("invalid arguments; use --help (secret values are accepted only in the browser)")
 	}
-	if fs.NArg() != 0 && os.Args[1] != "run" {
+	if fs.NArg() != 0 && os.Args[1] != "run" && os.Args[1] != "hook" {
 		return errors.New("unexpected positional arguments")
+	}
+	// These commands manage the shell integration and never touch the vault.
+	switch os.Args[1] {
+	case "hook":
+		if fs.NArg() != 1 || fs.Arg(0) != "session-start" {
+			return errors.New("usage: tapas hook session-start")
+		}
+		return sessionStart(executable)
+	case "install-hooks":
+		return installHooks(executable, *print)
+	case "status":
+		return sessionStatus()
 	}
 	if *identity == "" {
 		configDir, e := os.UserConfigDir()
@@ -138,6 +156,12 @@ func run() error {
 		emit(map[string]any{"status": "initialized", "store": *name, "identity": *identity, "identity_created": generatedIdentity})
 	case "list", "discover":
 		return listCredentials(s, *asJSON)
+	case "request":
+		return requestCredentials(ctx, s, refs)
+	case "env":
+		return exportClaims(ctx, s)
+	case "release":
+		return releaseClaims(*env, *all)
 	case "serve", "add":
 		server, e := entry.Start(s, entry.Options{Metadata: vault.Metadata{Name: *name, Description: *description, Service: *service, Environment: *environment, SuggestedEnv: *env}, Reason: *reason, Replace: *replace, TTL: *ttl})
 		if e != nil {
@@ -162,7 +186,7 @@ func run() error {
 		}
 	case "run":
 		if len(refs) == 0 {
-			return errors.New("provide at least one --ref; run tapas list for exact references")
+			return errors.New("provide at least one --ref; run discover for exact references")
 		}
 		// Reject an unusable target before decrypting anything.
 		for _, r := range refs {
@@ -205,7 +229,7 @@ func run() error {
 			return childStatus(status)
 		}
 	default:
-		return errors.New("unknown command; use init, list, add, or run")
+		return errors.New("unknown command; use init, list, add, run, request, release, status, install-hooks, or hook")
 	}
 	return nil
 }
@@ -213,14 +237,21 @@ func run() error {
 const usage = `Usage: tapas <command> [options]
 
 Vault
-  init   Create an identity and encrypted JSON vault
-  list   Show credential metadata; never decrypts (alias: discover)
-  add    Open a single-use browser form, save, and exit (alias: serve)
+  init           Create an identity and encrypted JSON vault
+  list           Show credential metadata; never decrypts (alias: discover)
+  add            Open a single-use browser form, save, and exit (alias: serve)
 
 Using a credential
-  run    Run one command with credentials in its environment only
+  run            Run one command with credentials in its environment only
+  request        Bind a credential to a variable for this session's shell
+  release        Drop this session's bindings
+  status         Show bindings and whether the hook is installed
+
+Setup
+  install-hooks  Add the SessionStart hook to ~/.claude/settings.json
+  hook           Internal: invoked by Claude Code at session start
 
 Use tapas <command> --help for options.
-Secret values are accepted only in the browser, and are never printed by list
-or any error message.
+Secret values are accepted only in the browser, and are never printed by list,
+status, or any error message.
 `
