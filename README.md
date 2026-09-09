@@ -122,7 +122,7 @@ The foreground process opens the default browser and prints one JSON `awaiting_u
 
 Enter the value in the masked browser field. Save returns a final JSON `saved` event containing the actual reference, such as `store:personal/<id>`, and exits. Cancel, Ctrl-C, SIGTERM, or expiry also stops the server. The default expiry is five minutes; `--ttl 30s` shortens it. A save already in progress is allowed to reach its bounded completion before shutdown, so a committed save is not reported as cancelled.
 
-Validation or encryption errors are shown in the browser without echoing the value. Use Back to correct input; for a revision conflict, cancel and reopen a fresh form. No secret value is accepted through CLI arguments, and there is no command that prints decrypted values.
+Validation or encryption errors are shown in the browser without echoing the value. Use Back to correct input; for a revision conflict, cancel and reopen a fresh form. No secret value is accepted through CLI arguments, and there is no command that prints a full decrypted value.
 
 ## Use a credential
 
@@ -135,7 +135,7 @@ bin/tapas run --ref GH_TOKEN=store:personal/CREDENTIAL_ID -- ./deploy.sh
 
 The runner removes exact occurrences of each delivered value from the child's stdout and stderr, across write boundaries. It does not decode transformed copies such as base64, and it does not see output the child writes directly to a terminal, a file, or a network destination. Because a short tail is held back to catch a split value, `run` suits non-interactive commands.
 
-References resolve by ID only. A renamed entry keeps its reference, and a reused name never resolves to a different secret. There is still no command that prints a decrypted value.
+References resolve by ID only. A renamed entry keeps its reference, and a reused name never resolves to a different secret. There is still no command that prints a full decrypted value.
 
 ## List and replace
 
@@ -152,9 +152,9 @@ bin/tapas add --replace CREDENTIAL_ID
 bin/tapas preview --ref store:personal/CREDENTIAL_ID
 ```
 
-`preview` opens a single-use local browser page so the human can recognize a stored value without returning any part of it to the CLI or agent. The page shows the credential metadata, character count, and at most one quarter of its characters, capped at eight, split between the beginning and end. Values shorter than four characters are completely masked.
+`preview` decrypts the selected credential in memory and returns its metadata, character count, and a deliberately limited fragment to the CLI. It reveals at most one quarter of the characters, capped at eight. It prioritizes the first four characters so an agent can recognize formats such as `sk_`; any remaining visible characters come from the end. Values shorter than four characters are completely masked.
 
-The full value is decrypted only after the authenticated page is requested and is reduced to the partial preview before rendering. The page is non-cacheable, contains inline local assets only, and cannot be loaded a second time. The CLI reports `previewed`, `expired`, or `cancelled`, never the preview itself. A partial preview still discloses secret material to the person looking at the browser; use it only when recognition is necessary.
+Example output includes a masked value such as `sk_l…wxyz`, never the full credential. The fragment is intentionally agent-visible and becomes part of the tool output, so treat it as disclosed secret material and use `preview` only when metadata alone cannot confirm that an entry has the expected shape. A plausible prefix or length does not prove that a credential is valid.
 
 ## Storage and lifecycle guarantees
 
@@ -164,7 +164,7 @@ The full value is decrypted only after the authenticated page is requested and i
 - Updates validate the newly encrypted document by decrypting it in memory, stage only encrypted bytes beside the destination, flush, and atomically replace the file. New files and staging files use owner-only permissions.
 - A crash before replacement leaves the original intact; a crash after replacement may have saved successfully even if no final event reached the caller. Check `list` before retrying. A crash may leave an encrypted staging file; never a tool-created plaintext staging file.
 - The `.lock` file deliberately remains so concurrent processes share one lock inode. Locks are released by the OS when a process dies. Non-cooperating external editors are outside the locking guarantee.
-- The HTTP server binds to `127.0.0.1` on a random port. It validates token, Host, and Origin; rejects cross-origin writes and replay; limits request sizes; disables caching; and serves no external scripts or assets. Preview pages are single-use and receive only the masked fragment produced on the server.
+- The HTTP server binds to `127.0.0.1` on a random port. It validates token, Host, and Origin; rejects cross-origin writes and replay; limits request sizes; disables caching; and serves no external scripts or assets.
 - The form has no JavaScript, analytics, browser storage, or request-body logging. Exact runtime-control environment variable names and prefixes are rejected by `vault.ValidateVariable`, both for suggested metadata and for `run` targets.
 - `run` delivers values only to the environment of the single child process it starts. It does not modify the parent shell, other tool calls, or an already running server. Transparent harness hooks are not implemented in this slice.
 
@@ -172,7 +172,7 @@ This is not isolation from arbitrary code running as your user. RAM erasure is n
 
 ## Claude Code skill
 
-`skills/agent-secrets/SKILL.md` instructs an agent to list before asking, to use exact references, to open the browser form for a missing credential, to open human-only masked previews, and to run credential-bearing commands through `tapas run`. The skill exists so that a session working on any project reaches for the vault instead of asking for a value in chat.
+`skills/agent-secrets/SKILL.md` instructs an agent to list before asking, to use exact references, to inspect a limited preview only when needed, to open the browser form for a missing credential, and to run credential-bearing commands through `tapas run`. The skill exists so that a session working on any project reaches for the vault instead of asking for a value in chat.
 
 It therefore belongs in the personal skill directory, not in this repository's project scope:
 

@@ -30,12 +30,8 @@ var completeScript string
 //go:embed complete.html
 var completeForm string
 
-//go:embed preview.html
-var previewForm string
-
 var page = template.Must(template.New("entry").Parse(form))
 var completePage = template.Must(template.New("complete").Parse(completeForm))
-var previewPage = template.Must(template.New("preview").Parse(previewForm))
 
 type Result struct {
 	Status string `json:"status"`
@@ -61,7 +57,6 @@ type Server struct {
 	result          chan Result
 	http            *http.Server
 	listener        net.Listener
-	previewRef      string
 }
 
 func Start(store *vault.Store, o Options) (*Server, error) {
@@ -87,34 +82,9 @@ func Start(store *vault.Store, o Options) (*Server, error) {
 			return nil, errors.New("replacement ID not found")
 		}
 	}
-	if e = s.listen(); e != nil {
-		return nil, e
-	}
-	return s, nil
-}
-
-// StartPreview hosts a one-time, human-facing masked view of a credential. It
-// validates the reference from plaintext metadata up front, but does not
-// decrypt the value until the authenticated page is requested.
-func StartPreview(store *vault.Store, ref string, ttl time.Duration) (*Server, error) {
-	if ttl <= 0 || ttl > 5*time.Minute {
-		return nil, errors.New("expiry must be greater than zero and at most five minutes")
-	}
-	_, e := store.Lookup(ref)
-	if e != nil {
-		return nil, e
-	}
-	s := &Server{store: store, token: vault.Token(), expires: time.Now().Add(ttl), result: make(chan Result, 1), previewRef: ref}
-	if e = s.listen(); e != nil {
-		return nil, e
-	}
-	return s, nil
-}
-
-func (s *Server) listen() error {
 	l, e := net.Listen("tcp4", "127.0.0.1:0")
 	if e != nil {
-		return errors.New("cannot bind loopback server")
+		return nil, errors.New("cannot bind loopback server")
 	}
 	s.listener = l
 	s.host = l.Addr().String()
@@ -124,7 +94,7 @@ func (s *Server) listen() error {
 			s.finish(Result{Status: "failed", Error: "local server stopped unexpectedly"})
 		}
 	}()
-	return nil
+	return s, nil
 }
 func (s *Server) URL() string        { return "http://" + s.host + "/?token=" + s.token }
 func (s *Server) Expires() time.Time { return s.expires }
@@ -193,26 +163,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if s.previewRef != "" {
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-			metadata, value, e := s.store.Resolve(ctx, s.previewRef)
-			cancel()
-			if e != nil {
-				http.Error(w, e.Error(), http.StatusBadRequest)
-				return
-			}
-			prefix, suffix, hidden, characters := maskPreview(value)
-			s.finished = true
-			_ = previewPage.Execute(w, struct {
-				Nonce                       string
-				Style                       template.CSS
-				Metadata                    vault.Metadata
-				Prefix, Suffix              string
-				Hidden, Characters, Visible int
-			}{s.token, template.CSS(style), metadata, prefix, suffix, hidden, characters, characters - hidden})
-			s.result <- Result{Status: "previewed", Ref: s.previewRef}
-			return
-		}
 		_ = page.Execute(w, struct {
 			Token, Reason, ReplaceName string
 			Metadata                   vault.Metadata
@@ -284,24 +234,4 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}{s.token, title, icon, detail, template.CSS(style), template.JS(completeScript)})
 	// Shutdown waits for this handler to finish, including response delivery.
 	s.result <- result
-}
-
-// maskPreview reveals no more than one quarter of the characters, capped at
-// eight. The split prefix/suffix helps a human recognize common token formats
-// without disclosing the complete value, even for very short credentials.
-func maskPreview(value string) (prefix, suffix string, hidden, characters int) {
-	runes := []rune(value)
-	characters = len(runes)
-	visible := characters / 4
-	if visible > 8 {
-		visible = 8
-	}
-	prefixLength := (visible + 1) / 2
-	suffixLength := visible / 2
-	prefix = string(runes[:prefixLength])
-	if suffixLength > 0 {
-		suffix = string(runes[characters-suffixLength:])
-	}
-	hidden = characters - visible
-	return
 }

@@ -166,7 +166,7 @@ func TestCLIRunDeliversCredentialAndExitStatus(t *testing.T) {
 	}
 }
 
-func TestCLIPreviewKeepsFragmentOutOfCLIOutput(t *testing.T) {
+func TestCLIPreviewReturnsOnlySafeFragment(t *testing.T) {
 	s := testutil.Vault(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -176,43 +176,39 @@ func TestCLIPreviewKeepsFragmentOutOfCLIOutput(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestCLIHelperProcess", "--", "preview", "--store", s.Path, "--identity", s.IdentityFile, "--open=false", "--ref", ref)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestCLIHelperProcess", "--", "preview", "--store", s.Path, "--identity", s.IdentityFile, "--ref", ref)
 	cmd.Env = append(os.Environ(), "TAPAS_TEST_HELPER=1")
-	stdout, e := cmd.StdoutPipe()
-	if e != nil {
-		t.Fatal(e)
+	out, e := cmd.Output()
+	if e != nil || bytes.Contains(out, []byte(secret)) {
+		t.Fatal("preview failed or returned the full credential", e)
 	}
-	if e = cmd.Start(); e != nil {
-		t.Fatal(e)
+	var result struct {
+		Status     string         `json:"status"`
+		Ref        string         `json:"ref"`
+		Credential vault.Metadata `json:"credential"`
+		Preview    string         `json:"preview"`
+		Characters int            `json:"characters"`
+		Visible    int            `json:"visible"`
 	}
-	scan := bufio.NewScanner(stdout)
-	if !scan.Scan() {
-		t.Fatal("missing preview ready event")
-	}
-	var ready struct {
-		Status string `json:"status"`
-		URL    string `json:"url"`
-	}
-	if json.Unmarshal(scan.Bytes(), &ready) != nil || ready.Status != "awaiting_user" || strings.Contains(scan.Text(), secret) {
-		t.Fatal("invalid preview ready event")
-	}
-	resp, e := http.Get(ready.URL)
-	if e != nil {
-		t.Fatal(e)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	if !scan.Scan() || strings.Contains(scan.Text(), secret) {
-		t.Fatal("missing or leaking preview result")
-	}
-	var final struct {
-		Status string `json:"status"`
-		Ref    string `json:"ref"`
-	}
-	if json.Unmarshal(scan.Bytes(), &final) != nil || final.Status != "previewed" || final.Ref != ref {
+	if json.Unmarshal(out, &result) != nil || result.Status != "previewed" || result.Ref != ref || result.Credential.Name != "Preview fixture" || result.Preview != "abcd…wxyz" || result.Characters != 34 || result.Visible != 8 {
 		t.Fatal("invalid preview result")
 	}
-	if e = cmd.Wait(); e != nil {
-		t.Fatal(e)
+	if bytes.Contains(out, []byte("preview-synthetic-secret")) {
+		t.Fatal("hidden credential content leaked")
+	}
+}
+
+func TestMaskPreviewDisclosureLimit(t *testing.T) {
+	for length := 1; length <= 100; length++ {
+		value := strings.Repeat("x", length)
+		preview, characters, visible := maskPreview(value)
+		shown := len([]rune(strings.Replace(preview, "…", "", 1)))
+		if characters != length || shown != visible || visible > 8 || visible*4 > length {
+			t.Fatalf("unsafe preview sizing for length %d: visible=%d", length, visible)
+		}
+	}
+	preview, characters, visible := maskPreview("sk_🔑abcdef界Z")
+	if preview != "sk_…" || characters != 12 || visible != 3 {
+		t.Fatal("preview did not count Unicode characters safely")
 	}
 }

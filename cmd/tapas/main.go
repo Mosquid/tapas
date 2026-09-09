@@ -172,27 +172,21 @@ func run() error {
 		if len(refs) != 1 || refs[0].variable != "" {
 			return errors.New("provide exactly one --ref REF; run tapas list for exact references")
 		}
-		server, e := entry.StartPreview(s, refs[0].reference, *ttl)
+		resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		metadata, value, e := s.Resolve(resolveCtx, refs[0].reference)
+		cancel()
 		if e != nil {
 			return e
 		}
-		opened := false
-		if *open {
-			program := "xdg-open"
-			if runtime.GOOS == "darwin" {
-				program = "open"
-			}
-			openCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			cmd := exec.CommandContext(openCtx, program, server.URL())
-			opened = cmd.Run() == nil
-			cancel()
-		}
-		emit(map[string]any{"status": "awaiting_user", "url": server.URL(), "expires_at": server.Expires(), "browser_opened": opened})
-		result := server.Wait(ctx)
-		emit(result)
-		if result.Status == "failed" {
-			return errors.New("server failed")
-		}
+		preview, characters, visible := maskPreview(value)
+		emit(struct {
+			Status     string         `json:"status"`
+			Ref        string         `json:"ref"`
+			Credential vault.Metadata `json:"credential"`
+			Preview    string         `json:"preview"`
+			Characters int            `json:"characters"`
+			Visible    int            `json:"visible"`
+		}{"previewed", refs[0].reference, metadata, preview, characters, visible})
 	case "run":
 		if len(refs) == 0 {
 			return errors.New("provide at least one --ref; run tapas list for exact references")
@@ -251,12 +245,12 @@ Vault
   init   Create an identity and encrypted JSON vault
   list   Show credential metadata; never decrypts (alias: discover)
   add    Open a single-use browser form, save, and exit (alias: serve)
-  preview  Open a single-use masked credential preview in the browser
+  preview  Show a limited credential fragment for format checking
 
 Using a credential
   run    Run one command with credentials in its environment only
 
 Use tapas <command> --help for options.
-Secret values are accepted only in the browser. Decrypted values and previews
-are never printed by the CLI or included in an error message.
+Secret values are accepted only in the browser. Full decrypted values are never
+printed by the CLI or included in an error message.
 `

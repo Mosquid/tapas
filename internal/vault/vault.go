@@ -288,25 +288,6 @@ func (s *Store) Discover() (Snapshot, error) {
 	sort.Slice(out.Credentials, func(i, j int) bool { return out.Credentials[i].Name < out.Credentials[j].Name })
 	return out, nil
 }
-
-// Lookup resolves only the plaintext metadata for an exact reference. It lets
-// callers validate a reference without decrypting any credential values.
-func (s *Store) Lookup(ref string) (Metadata, error) {
-	snap, e := s.Discover()
-	if e != nil {
-		return Metadata{}, e
-	}
-	id, e := parseRef(ref, snap.Store)
-	if e != nil {
-		return Metadata{}, e
-	}
-	for _, c := range snap.Credentials {
-		if c.ID == id {
-			return c, nil
-		}
-	}
-	return Metadata{}, errors.New("no credential with that reference; run discover for exact references")
-}
 func (s *Store) crypt(ctx context.Context, b []byte, recipient string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
