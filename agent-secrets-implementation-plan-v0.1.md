@@ -94,6 +94,7 @@ Exit gate: from an installed package, both CLIs discover and claim an existing s
 6. Persist a non-secret commit intent before replacement and enough commit identity in the encrypted document to reconcile a crash between store replacement and request-result recording. Confirm saved only after durable commit; recover ambiguous outcomes on the next invocation.
 7. Return the final saved reference. Saving never claims automatically. Poll status with bounded backoff; cancellation/expiry stop automatic retries. A failed claim after save must preserve and report the saved entry.
 8. Shut down after response delivery, cancellation, or expiry; reject replay and parallel submissions. Recover stale helper/request state after crashes without killing unrelated processes.
+9. Add a human-only `preview` request that validates an exact reference without decryption, decrypts only for the authenticated browser GET, masks on the server, and shuts down after its single response. Return no fragment through the CLI. Test short values, Unicode character counts, disclosure limits, escaping, expiry, and replay.
 
 Exit gate: install → init → missing discovery → browser save with a user rename → poll → claim the final reference → authenticated command. Also pass overwrite, duplicate submission, cancellation, expiry, concurrent save, disk failure, and crash recovery tests.
 

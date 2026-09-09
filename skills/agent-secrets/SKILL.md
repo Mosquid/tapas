@@ -1,7 +1,7 @@
 ---
 name: agent-secrets
 description: >-
-  Find, add, and use local credentials held in a SOPS-encrypted vault through
+  Find, preview, add, and use local credentials held in a SOPS-encrypted vault through
   the `tapas` CLI, without a secret value ever entering the conversation. Use
   this skill when a command needs an API key, token, or password; when a command
   fails with 401, 403, or a "missing environment variable" error; when the user
@@ -37,6 +37,8 @@ Run `tapas` from any directory. It finds the vault itself; never pass `--store`.
 8. Never interpolate a credential variable in a command your own shell expands.
    Wrap it in `sh -c '...'` so the child expands it, and confirm the value
    arrived before you trust the result. See "Quoting: the expansion trap".
+9. A preview is for the human looking at the local browser. Never copy, quote,
+   describe, or ask the user to transcribe its visible fragment into chat.
 
 ## Find what exists
 
@@ -50,6 +52,26 @@ one metadata record per credential with `id`, `name`, `description`, `service`,
 
 Match on `service` and `environment`. If two entries could both fit, ask the
 user which one, naming them by `name` and `environment`. Do not guess.
+
+## Preview a credential
+
+When the user needs to recognize which stored value an entry contains, open a
+single-use masked preview by exact reference:
+
+```sh
+tapas preview --ref <ref>
+```
+
+The CLI returns an `awaiting_user` event and opens a local browser page. Tell
+the user the preview is open; do not open or fetch its URL yourself. The browser
+shows the metadata, total character count, and no more than one quarter of the
+value, capped at eight characters. The CLI's final `previewed` event contains
+the reference but none of the visible fragment.
+
+Treat the partial preview as secret material. Never repeat it in the
+conversation, use it as a command argument, or ask the user what it showed. If
+the request expires, ask whether to open a new preview. Preview is for human
+recognition only; use `tapas run` when a command needs the credential.
 
 ## Use a credential
 

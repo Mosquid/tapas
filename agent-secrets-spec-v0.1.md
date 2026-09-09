@@ -126,6 +126,7 @@ These are logical interfaces, not final CLI syntax. All outputs follow a stable 
 | Operation | Inputs | Result |
 | --- | --- | --- |
 | discover | Query and optional service/environment filters | Matching references and metadata, or no match |
+| preview | Exact ref | Single-use human-only browser preview status; no value fragment in the model-facing result |
 | claim | Exact ref, target variable, session context | Claim ID, state, binding, adapter mode, readiness/error |
 | request_add | Suggested metadata, reason, optional explicit replacement reference | Request ID, expiry, browser-open status, fallback local URL |
 | request_status | Request ID and session context | Awaiting user, saved with final ref, cancelled, expired, or failed |
@@ -169,9 +170,11 @@ Optional transparent integration: a `PreToolUse` hook wraps supported shell call
 
 If transparent rewriting cannot preserve a command safely, return an actionable adapter error and use an explicit runner invocation. Prevent recursive wrapping. Do not claim that credentials become available to unrelated native tool calls, existing servers, or the Codex parent process.
 
-## 8. Browser addition
+## 8. Browser addition and preview
 
 The form contains the requested purpose, editable name and metadata, a masked secret field, Save, and Cancel. It uses only locally served assets, with no analytics, external scripts, browser storage, or secret-bearing URL parameters.
+
+An existing credential may be previewed only in a single-use local browser page. Render at most one quarter of the value's characters, capped at eight and split between its beginning and end; completely mask values shorter than four characters. Perform masking on the server so the complete value never reaches the page or model-facing output. The control result reports only previewed, cancelled, expired, or failed status and the exact reference. Treat the visible fragment as disclosed secret material, not safe metadata.
 
 - Bind to a random port on numeric loopback, never all network interfaces.
 - Authorize the request with an unpredictable short-lived token. Do not include the credential in the URL. The request token itself is a temporary capability, not a provider credential.

@@ -165,3 +165,54 @@ func TestCLIRunDeliversCredentialAndExitStatus(t *testing.T) {
 		t.Fatal("unknown reference not reported:", out, status)
 	}
 }
+
+func TestCLIPreviewKeepsFragmentOutOfCLIOutput(t *testing.T) {
+	s := testutil.Vault(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	snap, _ := s.Discover()
+	secret := "abcd-preview-synthetic-secret-wxyz"
+	ref, e := s.Save(ctx, snap.Revision, vault.Metadata{Name: "Preview fixture", Service: "fixture", Environment: "development"}, secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestCLIHelperProcess", "--", "preview", "--store", s.Path, "--identity", s.IdentityFile, "--open=false", "--ref", ref)
+	cmd.Env = append(os.Environ(), "TAPAS_TEST_HELPER=1")
+	stdout, e := cmd.StdoutPipe()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = cmd.Start(); e != nil {
+		t.Fatal(e)
+	}
+	scan := bufio.NewScanner(stdout)
+	if !scan.Scan() {
+		t.Fatal("missing preview ready event")
+	}
+	var ready struct {
+		Status string `json:"status"`
+		URL    string `json:"url"`
+	}
+	if json.Unmarshal(scan.Bytes(), &ready) != nil || ready.Status != "awaiting_user" || strings.Contains(scan.Text(), secret) {
+		t.Fatal("invalid preview ready event")
+	}
+	resp, e := http.Get(ready.URL)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if !scan.Scan() || strings.Contains(scan.Text(), secret) {
+		t.Fatal("missing or leaking preview result")
+	}
+	var final struct {
+		Status string `json:"status"`
+		Ref    string `json:"ref"`
+	}
+	if json.Unmarshal(scan.Bytes(), &final) != nil || final.Status != "previewed" || final.Ref != ref {
+		t.Fatal("invalid preview result")
+	}
+	if e = cmd.Wait(); e != nil {
+		t.Fatal(e)
+	}
+}

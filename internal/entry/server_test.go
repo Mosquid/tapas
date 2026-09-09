@@ -145,3 +145,60 @@ func TestReplacementRequiresConfirmation(t *testing.T) {
 		t.Fatal("confirmed save failed", w.Body.String())
 	}
 }
+
+func TestPreviewIsPartialSingleUseAndNeverReturnsFullValue(t *testing.T) {
+	store := testutil.Vault(t)
+	snap, _ := store.Discover()
+	secret := "abcd-very-long-synthetic-secret-wxyz"
+	ref, e := store.Save(context.Background(), snap.Revision, vault.Metadata{Name: "Preview me", Service: "fixture", Environment: "development", SuggestedEnv: "API_TOKEN"}, secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	s, e := StartPreview(store, ref, time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	result := make(chan Result, 1)
+	go func() { result <- s.Wait(context.Background()) }()
+
+	resp, e := http.Get(s.URL())
+	if e != nil {
+		t.Fatal(e)
+	}
+	html, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || bytes.Contains(html, []byte(secret)) {
+		t.Fatal("preview failed or returned the full secret")
+	}
+	for _, expected := range []string{"Preview me", "abcd", "wxyz", "8 of 36 characters visible", "The full value isn't here"} {
+		if !bytes.Contains(html, []byte(expected)) {
+			t.Fatalf("preview missing %q", expected)
+		}
+	}
+	select {
+	case got := <-result:
+		if got.Status != "previewed" || got.Ref != ref {
+			t.Fatal("wrong preview outcome", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("preview server did not terminate")
+	}
+	if _, e = http.Get(s.URL()); e == nil {
+		t.Fatal("preview replay remained available")
+	}
+}
+
+func TestMaskPreviewDisclosureLimit(t *testing.T) {
+	for length := 1; length <= 100; length++ {
+		value := strings.Repeat("x", length)
+		prefix, suffix, hidden, characters := maskPreview(value)
+		visible := len([]rune(prefix)) + len([]rune(suffix))
+		if characters != length || hidden+visible != length || visible > 8 || visible*4 > length {
+			t.Fatalf("unsafe preview sizing for length %d: visible=%d hidden=%d", length, visible, hidden)
+		}
+	}
+	prefix, suffix, hidden, characters := maskPreview("🔑abcdef界")
+	if prefix != "🔑" || suffix != "界" || hidden != 6 || characters != 8 {
+		t.Fatal("preview did not count Unicode characters safely")
+	}
+}

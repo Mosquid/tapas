@@ -146,6 +146,16 @@ bin/tapas add --replace CREDENTIAL_ID
 
 `list` returns the logical store, encrypted-file revision, and credential metadata, without decrypting. Use the exact `id` from `list` for replacement. The form identifies the affected entry and requires a confirmation checkbox. The ID stays stable if the user renames the entry. Duplicate names cannot overwrite an existing entry through the addition flow.
 
+## Preview a credential
+
+```sh
+bin/tapas preview --ref store:personal/CREDENTIAL_ID
+```
+
+`preview` opens a single-use local browser page so the human can recognize a stored value without returning any part of it to the CLI or agent. The page shows the credential metadata, character count, and at most one quarter of its characters, capped at eight, split between the beginning and end. Values shorter than four characters are completely masked.
+
+The full value is decrypted only after the authenticated page is requested and is reduced to the partial preview before rendering. The page is non-cacheable, contains inline local assets only, and cannot be loaded a second time. The CLI reports `previewed`, `expired`, or `cancelled`, never the preview itself. A partial preview still discloses secret material to the person looking at the browser; use it only when recognition is necessary.
+
 ## Storage and lifecycle guarantees
 
 - Names, IDs, descriptions, service/environment labels, suggested variables, and recipient metadata are readable; only values are secret. Do not put secret material in metadata.
@@ -154,7 +164,7 @@ bin/tapas add --replace CREDENTIAL_ID
 - Updates validate the newly encrypted document by decrypting it in memory, stage only encrypted bytes beside the destination, flush, and atomically replace the file. New files and staging files use owner-only permissions.
 - A crash before replacement leaves the original intact; a crash after replacement may have saved successfully even if no final event reached the caller. Check `list` before retrying. A crash may leave an encrypted staging file; never a tool-created plaintext staging file.
 - The `.lock` file deliberately remains so concurrent processes share one lock inode. Locks are released by the OS when a process dies. Non-cooperating external editors are outside the locking guarantee.
-- The HTTP server binds to `127.0.0.1` on a random port. It validates token, Host, and Origin; rejects cross-origin writes and replay; limits request sizes; disables caching; and serves no external scripts or assets.
+- The HTTP server binds to `127.0.0.1` on a random port. It validates token, Host, and Origin; rejects cross-origin writes and replay; limits request sizes; disables caching; and serves no external scripts or assets. Preview pages are single-use and receive only the masked fragment produced on the server.
 - The form has no JavaScript, analytics, browser storage, or request-body logging. Exact runtime-control environment variable names and prefixes are rejected by `vault.ValidateVariable`, both for suggested metadata and for `run` targets.
 - `run` delivers values only to the environment of the single child process it starts. It does not modify the parent shell, other tool calls, or an already running server. Transparent harness hooks are not implemented in this slice.
 
@@ -162,7 +172,7 @@ This is not isolation from arbitrary code running as your user. RAM erasure is n
 
 ## Claude Code skill
 
-`skills/agent-secrets/SKILL.md` instructs an agent to list before asking, to use exact references, to open the browser form for a missing credential, and to run credential-bearing commands through `tapas run`. The skill exists so that a session working on any project reaches for the vault instead of asking for a value in chat.
+`skills/agent-secrets/SKILL.md` instructs an agent to list before asking, to use exact references, to open the browser form for a missing credential, to open human-only masked previews, and to run credential-bearing commands through `tapas run`. The skill exists so that a session working on any project reaches for the vault instead of asking for a value in chat.
 
 It therefore belongs in the personal skill directory, not in this repository's project scope:
 
