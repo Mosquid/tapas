@@ -72,7 +72,7 @@ func run() error {
 		return nil
 	}
 	if len(os.Args) < 2 {
-		return errors.New("usage: tapas init|list|add|run [options]; use --help for flags")
+		return errors.New("usage: tapas init|list|add|preview|run [options]; use --help for flags")
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -92,7 +92,7 @@ func run() error {
 	env := fs.String("env", "", "suggested environment variable")
 	reason := fs.String("reason", "", "purpose shown in the browser")
 	replace := fs.String("replace", "", "exact credential ID to replace; browser confirmation required")
-	ttl := fs.Duration("ttl", 5*time.Minute, "form lifetime, at most 5m")
+	ttl := fs.Duration("ttl", 5*time.Minute, "browser request lifetime, at most 5m")
 	open := fs.Bool("open", true, "open the default browser")
 	asJSON := fs.Bool("json", false, "print JSON even when the output is a terminal (list)")
 	var refs refList
@@ -168,6 +168,25 @@ func run() error {
 		if result.Status == "failed" {
 			return errors.New("server failed")
 		}
+	case "preview":
+		if len(refs) != 1 || refs[0].variable != "" {
+			return errors.New("provide exactly one --ref REF; run tapas list for exact references")
+		}
+		resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		metadata, value, e := s.Resolve(resolveCtx, refs[0].reference)
+		cancel()
+		if e != nil {
+			return e
+		}
+		preview, characters, visible := maskPreview(value)
+		emit(struct {
+			Status     string         `json:"status"`
+			Ref        string         `json:"ref"`
+			Credential vault.Metadata `json:"credential"`
+			Preview    string         `json:"preview"`
+			Characters int            `json:"characters"`
+			Visible    int            `json:"visible"`
+		}{"previewed", refs[0].reference, metadata, preview, characters, visible})
 	case "run":
 		if len(refs) == 0 {
 			return errors.New("provide at least one --ref; run tapas list for exact references")
@@ -213,7 +232,7 @@ func run() error {
 			return childStatus(status)
 		}
 	default:
-		return errors.New("unknown command; use init, list, add, or run")
+		return errors.New("unknown command; use init, list, add, preview, or run")
 	}
 	return nil
 }
@@ -226,11 +245,12 @@ Vault
   init   Create an identity and encrypted JSON vault
   list   Show credential metadata; never decrypts (alias: discover)
   add    Open a single-use browser form, save, and exit (alias: serve)
+  preview  Show a limited credential fragment for format checking
 
 Using a credential
   run    Run one command with credentials in its environment only
 
 Use tapas <command> --help for options.
-Secret values are accepted only in the browser, and are never printed by list
-or any error message.
+Secret values are accepted only in the browser. Full decrypted values are never
+printed by the CLI or included in an error message.
 `

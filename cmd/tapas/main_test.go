@@ -165,3 +165,50 @@ func TestCLIRunDeliversCredentialAndExitStatus(t *testing.T) {
 		t.Fatal("unknown reference not reported:", out, status)
 	}
 }
+
+func TestCLIPreviewReturnsOnlySafeFragment(t *testing.T) {
+	s := testutil.Vault(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	snap, _ := s.Discover()
+	secret := "abcd-preview-synthetic-secret-wxyz"
+	ref, e := s.Save(ctx, snap.Revision, vault.Metadata{Name: "Preview fixture", Service: "fixture", Environment: "development"}, secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestCLIHelperProcess", "--", "preview", "--store", s.Path, "--identity", s.IdentityFile, "--ref", ref)
+	cmd.Env = append(os.Environ(), "TAPAS_TEST_HELPER=1")
+	out, e := cmd.Output()
+	if e != nil || bytes.Contains(out, []byte(secret)) {
+		t.Fatal("preview failed or returned the full credential", e)
+	}
+	var result struct {
+		Status     string         `json:"status"`
+		Ref        string         `json:"ref"`
+		Credential vault.Metadata `json:"credential"`
+		Preview    string         `json:"preview"`
+		Characters int            `json:"characters"`
+		Visible    int            `json:"visible"`
+	}
+	if json.Unmarshal(out, &result) != nil || result.Status != "previewed" || result.Ref != ref || result.Credential.Name != "Preview fixture" || result.Preview != "abcd…wxyz" || result.Characters != 34 || result.Visible != 8 {
+		t.Fatal("invalid preview result")
+	}
+	if bytes.Contains(out, []byte("preview-synthetic-secret")) {
+		t.Fatal("hidden credential content leaked")
+	}
+}
+
+func TestMaskPreviewDisclosureLimit(t *testing.T) {
+	for length := 1; length <= 100; length++ {
+		value := strings.Repeat("x", length)
+		preview, characters, visible := maskPreview(value)
+		shown := len([]rune(strings.Replace(preview, "…", "", 1)))
+		if characters != length || shown != visible || visible > 8 || visible*4 > length {
+			t.Fatalf("unsafe preview sizing for length %d: visible=%d", length, visible)
+		}
+	}
+	preview, characters, visible := maskPreview("sk_🔑abcdef界Z")
+	if preview != "sk_…" || characters != 12 || visible != 3 {
+		t.Fatal("preview did not count Unicode characters safely")
+	}
+}

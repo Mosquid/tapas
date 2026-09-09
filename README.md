@@ -122,7 +122,7 @@ The foreground process opens the default browser and prints one JSON `awaiting_u
 
 Enter the value in the masked browser field. Save returns a final JSON `saved` event containing the actual reference, such as `store:personal/<id>`, and exits. Cancel, Ctrl-C, SIGTERM, or expiry also stops the server. The default expiry is five minutes; `--ttl 30s` shortens it. A save already in progress is allowed to reach its bounded completion before shutdown, so a committed save is not reported as cancelled.
 
-Validation or encryption errors are shown in the browser without echoing the value. Use Back to correct input; for a revision conflict, cancel and reopen a fresh form. No secret value is accepted through CLI arguments, and there is no command that prints decrypted values.
+Validation or encryption errors are shown in the browser without echoing the value. Use Back to correct input; for a revision conflict, cancel and reopen a fresh form. No secret value is accepted through CLI arguments, and there is no command that prints a full decrypted value.
 
 ## Use a credential
 
@@ -135,7 +135,7 @@ bin/tapas run --ref GH_TOKEN=store:personal/CREDENTIAL_ID -- ./deploy.sh
 
 The runner removes exact occurrences of each delivered value from the child's stdout and stderr, across write boundaries. It does not decode transformed copies such as base64, and it does not see output the child writes directly to a terminal, a file, or a network destination. Because a short tail is held back to catch a split value, `run` suits non-interactive commands.
 
-References resolve by ID only. A renamed entry keeps its reference, and a reused name never resolves to a different secret. There is still no command that prints a decrypted value.
+References resolve by ID only. A renamed entry keeps its reference, and a reused name never resolves to a different secret. There is still no command that prints a full decrypted value.
 
 ## List and replace
 
@@ -145,6 +145,16 @@ bin/tapas add --replace CREDENTIAL_ID
 ```
 
 `list` returns the logical store, encrypted-file revision, and credential metadata, without decrypting. Use the exact `id` from `list` for replacement. The form identifies the affected entry and requires a confirmation checkbox. The ID stays stable if the user renames the entry. Duplicate names cannot overwrite an existing entry through the addition flow.
+
+## Preview a credential
+
+```sh
+bin/tapas preview --ref store:personal/CREDENTIAL_ID
+```
+
+`preview` decrypts the selected credential in memory and returns its metadata, character count, and a deliberately limited fragment to the CLI. It reveals at most one quarter of the characters, capped at eight. It prioritizes the first four characters so an agent can recognize formats such as `sk_`; any remaining visible characters come from the end. Values shorter than four characters are completely masked.
+
+Example output includes a masked value such as `sk_l…wxyz`, never the full credential. The fragment is intentionally agent-visible and becomes part of the tool output, so treat it as disclosed secret material and use `preview` only when metadata alone cannot confirm that an entry has the expected shape. A plausible prefix or length does not prove that a credential is valid.
 
 ## Storage and lifecycle guarantees
 
@@ -162,7 +172,7 @@ This is not isolation from arbitrary code running as your user. RAM erasure is n
 
 ## Claude Code skill
 
-`skills/agent-secrets/SKILL.md` instructs an agent to list before asking, to use exact references, to open the browser form for a missing credential, and to run credential-bearing commands through `tapas run`. The skill exists so that a session working on any project reaches for the vault instead of asking for a value in chat.
+`skills/agent-secrets/SKILL.md` instructs an agent to list before asking, to use exact references, to inspect a limited preview only when needed, to open the browser form for a missing credential, and to run credential-bearing commands through `tapas run`. The skill exists so that a session working on any project reaches for the vault instead of asking for a value in chat.
 
 It therefore belongs in the personal skill directory, not in this repository's project scope:
 

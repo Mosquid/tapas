@@ -1,8 +1,8 @@
 ---
 name: agent-secrets
 description: >-
-  Find, add, and use local credentials held in a SOPS-encrypted vault through
-  the `tapas` CLI, without a secret value ever entering the conversation. Use
+  Find, preview, add, and use local credentials held in a SOPS-encrypted vault through
+  the `tapas` CLI, without a full secret value entering the conversation. Use
   this skill when a command needs an API key, token, or password; when a command
   fails with 401, 403, or a "missing environment variable" error; when the user
   asks where a credential is stored, asks to add or rotate one, or offers to
@@ -14,7 +14,7 @@ description: >-
 
 `tapas` stores credentials in a SOPS-encrypted JSON vault on this machine. The
 user types values into a local browser form. You never see, print, or ask for a
-value. You work with references such as `store:personal/9f2c...` instead.
+full value. You work with references such as `store:personal/9f2c...` instead.
 
 Run `tapas` from any directory. It finds the vault itself; never pass `--store`.
 
@@ -37,6 +37,8 @@ Run `tapas` from any directory. It finds the vault itself; never pass `--store`.
 8. Never interpolate a credential variable in a command your own shell expands.
    Wrap it in `sh -c '...'` so the child expands it, and confirm the value
    arrived before you trust the result. See "Quoting: the expansion trap".
+9. Preview only when metadata is insufficient to check a credential's likely
+   format. Treat the returned fragment as secret material and do not repeat it.
 
 ## Find what exists
 
@@ -50,6 +52,27 @@ one metadata record per credential with `id`, `name`, `description`, `service`,
 
 Match on `service` and `environment`. If two entries could both fit, ask the
 user which one, naming them by `name` and `environment`. Do not guess.
+
+## Preview a credential
+
+When metadata alone cannot confirm that an entry has the expected shape, inspect
+a masked preview by exact reference:
+
+```sh
+tapas preview --ref <ref>
+```
+
+The CLI returns one JSON `previewed` result containing credential metadata, the
+total character count, and a masked fragment such as `sk_l…wxyz`. It reveals no
+more than one quarter of the value, capped at eight characters. The first four
+characters are prioritized so recognizable prefixes such as `sk_` survive; any
+remaining visible characters come from the suffix. Values shorter than four
+characters are completely masked.
+
+The fragment is intentionally model-visible. Use it only to check likely format,
+not to authenticate, and never repeat it in your response or use it as a command
+argument. A plausible prefix or length does not prove that the credential works;
+use `tapas run` when a command needs the credential.
 
 ## Use a credential
 

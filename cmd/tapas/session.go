@@ -9,6 +9,29 @@ import (
 	"tapas/internal/vault"
 )
 
+// maskPreview returns a recognizable fragment without exposing the full
+// credential. At most one quarter of the characters are visible, capped at
+// eight. Prefix characters are prioritized so common formats such as sk_ can
+// be recognized; any remainder comes from the suffix.
+func maskPreview(value string) (preview string, characters, visible int) {
+	runes := []rune(value)
+	characters = len(runes)
+	visible = characters / 4
+	if visible > 8 {
+		visible = 8
+	}
+	prefixLength := visible
+	if prefixLength > 4 {
+		prefixLength = 4
+	}
+	suffixLength := visible - prefixLength
+	preview = string(runes[:prefixLength]) + "…"
+	if suffixLength > 0 {
+		preview += string(runes[characters-suffixLength:])
+	}
+	return
+}
+
 // terminal reports whether a stream is attached to a screen rather than a pipe.
 // Humans get a table; an agent or a script gets JSON.
 func terminal(f *os.File) bool {

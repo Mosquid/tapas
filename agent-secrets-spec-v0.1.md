@@ -121,11 +121,12 @@ Claim fields: claim ID, session ID, project identity, credential reference, targ
 
 ## 6. Agent-facing operations
 
-These are logical interfaces, not final CLI syntax. All outputs follow a stable structured schema. No operation accepts or returns a raw secret through the model-facing channel.
+These are logical interfaces, not final CLI syntax. All outputs follow a stable structured schema. No operation accepts or returns a full raw secret through the model-facing channel; `preview` is the explicit limited-disclosure exception.
 
 | Operation | Inputs | Result |
 | --- | --- | --- |
 | discover | Query and optional service/environment filters | Matching references and metadata, or no match |
+| preview | Exact ref | Metadata, character count, and a model-visible masked fragment limited to at most one quarter of the value and eight characters |
 | claim | Exact ref, target variable, session context | Claim ID, state, binding, adapter mode, readiness/error |
 | request_add | Suggested metadata, reason, optional explicit replacement reference | Request ID, expiry, browser-open status, fallback local URL |
 | request_status | Request ID and session context | Awaiting user, saved with final ref, cancelled, expired, or failed |
@@ -136,6 +137,8 @@ These are logical interfaces, not final CLI syntax. All outputs follow a stable 
 Session context comes from trusted integration state wherever possible. Do not let an unvalidated arbitrary session ID select another session's registry.
 
 Addition defaults: one secret per form, a five-minute expiry, and one active request for the same proposed credential/session. Poll with modest backoff; do not burn model turns in a tight loop.
+
+Preview prioritizes up to four prefix characters so an agent can recognize formats such as `sk_`; any remaining allowance comes from the suffix. Values shorter than four characters are completely masked. The partial disclosure is intentional and must be treated as secret material in the transcript. Preview confirms only likely shape and presence, never validity.
 
 The tool's own logs and errors never include values. Child output is a separate risk: a local runner should redact exact injected values from stdout/stderr before returning output, preserving exit status. Redaction must handle chunk boundaries and have documented limits for encoding, transformations, and external log destinations. Do not label a native-shell path as redacted unless the adapter actually intercepts its output.
 
