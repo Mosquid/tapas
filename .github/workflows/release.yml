@@ -88,12 +88,18 @@ jobs:
         run: |
           set -eu
           test_root=$(mktemp -d)
+          mkdir -p "$test_root/fake bin"
+          printf '%s\n' '#!/bin/sh' 'exit 0' > "$test_root/fake bin/codex"
+          chmod +x "$test_root/fake bin/codex"
+          PATH="$test_root/fake bin:$PATH" \
+          HOME="$test_root/home with spaces" \
           TAPAS_ASSET_BASE_URL="file://$PWD/dist" \
           TAPAS_INSTALL_DIR="$test_root/bin with spaces" \
           TAPAS_SKILL_DIR="$test_root/skill with spaces" \
             sh ./install.sh
           "$test_root/bin with spaces/tapas" version | grep -Fx "tapas ${RELEASE_TAG#v}"
           test -f "$test_root/skill with spaces/SKILL.md"
+          test -f "$test_root/home with spaces/.agents/skills/agent-secrets/SKILL.md"
 
           bad_release=$(mktemp -d)
           cp "dist/tapas-linux-amd64.tar.gz" "$bad_release/"

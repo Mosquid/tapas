@@ -27,7 +27,7 @@ This is protection against routine accidental disclosure into prompts and tool r
 - An initialization step that selects the store, configures an existing SOPS recipient/decryption setup, and installs the appropriate skill and hook configuration.
 - Discovery of credential metadata without value decryption.
 - Explicit secret references, environment-variable mappings, and session-scoped claims.
-- Temporary localhost browser entry for new secrets and explicitly confirmed replacements.
+- Temporary localhost browser entry for new secrets, metadata edits, explicitly confirmed replacements, and deletions.
 - A Claude Code adapter and a Codex CLI adapter, with different persistence semantics disclosed.
 - Status, release, timeout handling, and local diagnostic events containing metadata only.
 
@@ -83,7 +83,7 @@ Saving and claiming are separate operations. A user rename must never cause the 
 | Local CLI/tool | Provide structured operations, validate inputs, manage session bindings and addition requests |
 | SOPS adapter | Read metadata, decrypt locally for execution, encrypt and atomically update the store |
 | Harness adapter | Integrate claims with the CLI's shell execution lifecycle |
-| Temporary browser server | Collect the secret outside chat and perform one confirmed store update |
+| Temporary browser server | Collect secrets outside chat and confirm one store update or deletion |
 
 The default package is a CLI callable from the agent's existing shell tool. A permanent MCP process is not required. A short-lived helper may remain alive while the browser request awaits input.
 
@@ -94,7 +94,7 @@ The default package is a CLI callable from the agent's existing shell tool. A pe
 | Field | Meaning |
 | --- | --- |
 | ref | Stable reference composed of logical store and credential ID |
-| name | Human-readable name, editable during addition |
+| name | Human-readable name, editable without changing the credential ID or value |
 | description | Short purpose; never include secret material |
 | service | Provider or target service, for discovery |
 | environment | Explicit label such as development, staging, production, or personal |
@@ -118,6 +118,7 @@ Claim fields: claim ID, session ID, project identity, credential reference, targ
 - A new process/session starts unclaimed. Resuming a conversation re-establishes claims against the current store and adapter.
 - Release removes future injection. It cannot erase a variable from an already-running child process.
 - A credential replacement invalidates claims bound to the old revision and requires a new claim; no silent rotation inside a running task.
+- Credential deletion invalidates claims for that reference. Metadata-only edits preserve the reference and value but still advance the store revision.
 
 ## 6. Agent-facing operations
 
@@ -129,6 +130,8 @@ These are logical interfaces, not final CLI syntax. All outputs follow a stable 
 | preview | Exact ref | Metadata, character count, and a model-visible masked fragment limited to at most one quarter of the value and eight characters |
 | claim | Exact ref, target variable, session context | Claim ID, state, binding, adapter mode, readiness/error |
 | request_add | Suggested metadata, reason, optional explicit replacement reference | Request ID, expiry, browser-open status, fallback local URL |
+| request_edit | Exact ref | Browser request for metadata-only editing; saved result preserves the ref and value |
+| request_delete | Exact ref | Browser request naming the credential; deletion requires explicit user confirmation |
 | request_status | Request ID and session context | Awaiting user, saved with final ref, cancelled, expired, or failed |
 | status | Session context | Adapter readiness, store availability, active bindings; no values |
 | release | Claim ID | Released or already released |

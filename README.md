@@ -15,9 +15,10 @@ curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | sh
 ```
 
 The installer verifies the release archive against its SHA-256 manifest,
-installs `tapas` to `~/.local/bin`, and installs the skill to
-`~/.claude/skills/agent-secrets`. Both locations can be overridden, and a
-specific release can be pinned:
+installs `tapas` to `~/.local/bin`, and installs the Agent Secrets skill for
+Claude Code. When `codex` is on `PATH`, it also installs the same skill for
+Codex CLI. The locations can be overridden, and a specific release can be
+pinned:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | \
@@ -32,10 +33,10 @@ tapas version
 tapas init --name personal
 ```
 
-### Install the Claude Code skill
+### Install the agent skill
 
 The standard installer installs both the `tapas` executable and the Agent
-Secrets skill. By default, the skill is written to:
+Secrets skill. For Claude Code, the skill is written to:
 
 ```text
 ~/.claude/skills/agent-secrets/SKILL.md
@@ -49,6 +50,18 @@ automatically when a task needs a credential, or you can invoke it directly:
 /agent-secrets
 ```
 
+If Codex CLI is installed, the installer detects `codex` on `PATH` and also
+writes the skill to its user-scoped location:
+
+```text
+~/.agents/skills/agent-secrets/SKILL.md
+```
+
+Codex detects skill changes automatically; restart it if the skill does not
+appear. Override this location with `--codex-skill-dir <path>` or
+`TAPAS_CODEX_SKILL_DIR`. The `--no-skill` option skips both Claude Code and
+Codex skill installation. See the [official OpenAI skill locations](https://developers.openai.com/codex/skills/#where-to-save-skills).
+
 To install or update only the skill, without running the binary installer:
 
 ```sh
@@ -56,6 +69,11 @@ mkdir -p "$HOME/.claude/skills/agent-secrets"
 curl -fsSL \
   https://raw.githubusercontent.com/Mosquid/tapas/main/skills/agent-secrets/SKILL.md \
   -o "$HOME/.claude/skills/agent-secrets/SKILL.md"
+
+mkdir -p "$HOME/.agents/skills/agent-secrets"
+curl -fsSL \
+  https://raw.githubusercontent.com/Mosquid/tapas/main/skills/agent-secrets/SKILL.md \
+  -o "$HOME/.agents/skills/agent-secrets/SKILL.md"
 ```
 
 The skill expects `tapas` and SOPS to be available on `PATH`; installing the
@@ -137,14 +155,26 @@ The runner removes exact occurrences of each delivered value from the child's st
 
 References resolve by ID only. A renamed entry keeps its reference, and a reused name never resolves to a different secret. There is still no command that prints a full decrypted value.
 
-## List and replace
+## List, edit, replace, and delete
 
 ```sh
 bin/tapas list
+bin/tapas edit --ref store:personal/CREDENTIAL_ID
 bin/tapas add --replace CREDENTIAL_ID
+bin/tapas delete --ref store:personal/CREDENTIAL_ID
 ```
 
 `list` returns the logical store, encrypted-file revision, and credential metadata, without decrypting. Use the exact `id` from `list` for replacement. The form identifies the affected entry and requires a confirmation checkbox. The ID stays stable if the user renames the entry. Duplicate names cannot overwrite an existing entry through the addition flow.
+
+`edit` opens the local browser with the credential metadata prefilled. It updates
+the name, description, service, environment, or suggested variable without
+asking for or changing the secret value. The immutable ID and reference stay
+the same.
+
+`delete` opens a local confirmation page that names the selected credential.
+Deletion is permanent and only proceeds after the user selects the confirmation
+checkbox. The secret is never placed in the form or command output. `remove` is
+an alias for `delete`.
 
 ## Preview a credential
 
@@ -160,7 +190,7 @@ Example output includes a masked value such as `sk_l…wxyz`, never the full cre
 
 - Names, IDs, descriptions, service/environment labels, suggested variables, and recipient metadata are readable; only values are secret. Do not put secret material in metadata.
 - Decryption and re-encryption use memory and private SOPS pipes. The store is decrypted on save, not kept decrypted while the form waits.
-- Saves hold a cross-process lock and compare the form's original revision. Concurrent writers using this tool cannot lose updates. Any change since opening the form produces a conflict.
+- Saves, edits, and deletions hold a cross-process lock and compare the form's original revision. Concurrent writers using this tool cannot lose updates. Any change since opening the form produces a conflict.
 - Updates validate the newly encrypted document by decrypting it in memory, stage only encrypted bytes beside the destination, flush, and atomically replace the file. New files and staging files use owner-only permissions.
 - A crash before replacement leaves the original intact; a crash after replacement may have saved successfully even if no final event reached the caller. Check `list` before retrying. A crash may leave an encrypted staging file; never a tool-created plaintext staging file.
 - The `.lock` file deliberately remains so concurrent processes share one lock inode. Locks are released by the OS when a process dies. Non-cooperating external editors are outside the locking guarantee.
@@ -190,6 +220,6 @@ go test -race ./...
 go vet ./...
 ```
 
-Tests require SOPS and permission to bind loopback ports. They create disposable age identities and synthetic credentials in temporary directories. Coverage includes encrypted round trips, rename/replacement, unchanged originals on failure, duplicate-key rejection, concurrent saves, HTTP token/Host/Origin checks, escaped metadata, replay rejection, cancellation, expiry, listener shutdown, reference resolution by ID, split-write redaction, child environment delivery, and child exit status. Browser layout has not yet been manually verified in a graphical browser.
+Tests require SOPS and permission to bind loopback ports. They create disposable age identities and synthetic credentials in temporary directories. Coverage includes encrypted round trips, metadata editing, confirmed deletion, rename/replacement, unchanged originals on failure, duplicate-key rejection, concurrent saves, HTTP token/Host/Origin checks, escaped metadata, replay rejection, cancellation, expiry, listener shutdown, reference resolution by ID, split-write redaction, child environment delivery, and child exit status. Browser layout has not yet been manually verified in a graphical browser.
 
 In a restricted development sandbox, point `GOCACHE` and `GOPATH` at writable directories if needed. This does not affect the installed binary.

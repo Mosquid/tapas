@@ -42,21 +42,23 @@ type Options struct {
 	Metadata vault.Metadata
 	Reason   string
 	Replace  string
+	Edit     string
+	Delete   string
 	TTL      time.Duration
 }
 type Server struct {
-	store           *vault.Store
-	snapshot        vault.Snapshot
-	options         Options
-	replacementName string
-	token           string
-	host            string
-	expires         time.Time
-	mu              sync.Mutex
-	finished        bool
-	result          chan Result
-	http            *http.Server
-	listener        net.Listener
+	store      *vault.Store
+	snapshot   vault.Snapshot
+	options    Options
+	targetName string
+	token      string
+	host       string
+	expires    time.Time
+	mu         sync.Mutex
+	finished   bool
+	result     chan Result
+	http       *http.Server
+	listener   net.Listener
 }
 
 func Start(store *vault.Store, o Options) (*Server, error) {
@@ -66,6 +68,9 @@ func Start(store *vault.Store, o Options) (*Server, error) {
 	if len(o.Reason) > 2048 {
 		return nil, errors.New("purpose is too long")
 	}
+	if selected := boolInt(o.Replace != "") + boolInt(o.Edit != "") + boolInt(o.Delete != ""); selected > 1 {
+		return nil, errors.New("choose only one credential operation")
+	}
 	snap, e := store.Discover()
 	if e != nil {
 		return nil, e
@@ -74,13 +79,21 @@ func Start(store *vault.Store, o Options) (*Server, error) {
 	if o.Replace != "" {
 		for _, c := range snap.Credentials {
 			if c.ID == o.Replace {
-				s.replacementName = c.Name
+				s.targetName = c.Name
 				s.options.Metadata = c
 			}
 		}
-		if s.replacementName == "" {
+		if s.targetName == "" {
 			return nil, errors.New("replacement ID not found")
 		}
+	}
+	if ref := firstNonempty(o.Edit, o.Delete); ref != "" {
+		m, e := snap.Find(ref)
+		if e != nil {
+			return nil, e
+		}
+		s.targetName = m.Name
+		s.options.Metadata = m
 	}
 	l, e := net.Listen("tcp4", "127.0.0.1:0")
 	if e != nil {
@@ -95,6 +108,22 @@ func Start(store *vault.Store, o Options) (*Server, error) {
 		}
 	}()
 	return s, nil
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func firstNonempty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 func (s *Server) URL() string        { return "http://" + s.host + "/?token=" + s.token }
 func (s *Server) Expires() time.Time { return s.expires }
@@ -164,12 +193,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = page.Execute(w, struct {
-			Token, Reason, ReplaceName string
-			Metadata                   vault.Metadata
-		}{s.token, s.options.Reason, s.replacementName, s.options.Metadata})
+			Token, Reason, TargetName string
+			Metadata                  vault.Metadata
+			Replace, Edit, Delete     bool
+		}{s.token, s.options.Reason, s.targetName, s.options.Metadata, s.options.Replace != "", s.options.Edit != "", s.options.Delete != ""})
 		return
 	}
-	if r.Method != http.MethodPost || (r.URL.Path != "/save" && r.URL.Path != "/cancel") {
+	if r.Method != http.MethodPost || (r.URL.Path != "/save" && r.URL.Path != "/delete" && r.URL.Path != "/cancel") {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	if r.URL.Path != "/cancel" && (r.URL.Path == "/delete") != (s.options.Delete != "") {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
@@ -198,6 +232,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.URL.Path == "/delete" {
+		for k := range r.PostForm {
+			if k != "token" && k != "confirm" {
+				http.Error(w, "Unknown form field", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	if r.URL.Path == "/save" && s.options.Edit != "" && (r.PostForm.Has("value") || r.PostForm.Has("confirm")) {
+		http.Error(w, "Unknown form field", http.StatusBadRequest)
+		return
+	}
 	if subtle.ConstantTimeCompare([]byte(r.PostForm.Get("token")), []byte(s.token)) != 1 {
 		http.Error(w, "Invalid request token", http.StatusForbidden)
 		return
@@ -213,18 +259,43 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m := vault.Metadata{Name: r.PostForm.Get("name"), Description: r.PostForm.Get("description"), Service: r.PostForm.Get("service"), Environment: r.PostForm.Get("environment"), SuggestedEnv: r.PostForm.Get("suggested_env")}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		ref, e := s.store.Save(ctx, s.snapshot.Revision, m, r.PostForm.Get("value"), s.options.Replace, r.PostForm.Get("confirm") == "yes")
+		var ref string
+		var e error
+		if s.options.Edit != "" {
+			ref, e = s.store.Edit(ctx, s.snapshot.Revision, m, s.options.Edit)
+			result.Status = "edited"
+		} else {
+			ref, e = s.store.Save(ctx, s.snapshot.Revision, m, r.PostForm.Get("value"), s.options.Replace, r.PostForm.Get("confirm") == "yes")
+			result.Status = "saved"
+		}
 		if e != nil {
 			http.Error(w, e.Error(), http.StatusBadRequest)
 			return
 		}
-		result = Result{Status: "saved", Ref: ref}
+		result.Ref = ref
+	}
+	if r.URL.Path == "/delete" {
+		if r.PostForm.Get("confirm") != "yes" {
+			http.Error(w, "Confirm deletion in the browser", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if e := s.store.Delete(ctx, s.snapshot.Revision, s.options.Delete); e != nil {
+			http.Error(w, e.Error(), http.StatusBadRequest)
+			return
+		}
+		result.Status = "deleted"
 	}
 	s.finished = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	title, icon, detail := "Request canceled", "×", "Nothing was changed"
 	if result.Status == "saved" {
 		title, icon, detail = "Saved and encrypted", "✓", "The credential is ready"
+	} else if result.Status == "edited" {
+		title, icon, detail = "Changes saved", "✓", "The secret value didn't change"
+	} else if result.Status == "deleted" {
+		title, icon, detail = "Credential deleted", "✓", "The credential is no longer available"
 	}
 	// Inline bundled assets here: the server will be gone before a new fetch.
 	_ = completePage.Execute(w, struct {

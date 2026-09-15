@@ -56,6 +56,22 @@ type Snapshot struct {
 	Revision    string     `json:"revision"`
 	Credentials []Metadata `json:"credentials"`
 }
+
+// Find returns metadata for an exact credential reference without decrypting
+// the store. References are matched by immutable ID, never by display name.
+func (s Snapshot) Find(ref string) (Metadata, error) {
+	id, e := parseRef(ref, s.Store)
+	if e != nil {
+		return Metadata{}, e
+	}
+	for _, c := range s.Credentials {
+		if c.ID == id {
+			return c, nil
+		}
+	}
+	return Metadata{}, errors.New("no credential with that reference; run list for exact references")
+}
+
 type Store struct {
 	Path         string
 	Binary       string
@@ -408,6 +424,63 @@ func (s *Store) Init(ctx context.Context, name, recipient string) error {
 	return s.commit(b, true)
 }
 
+func (s *Store) rewrite(ctx context.Context, revision string, change func(*document) error) (document, error) {
+	unlock, e := s.lock(ctx)
+	if e != nil {
+		return document{}, e
+	}
+	defer unlock()
+	b, e := s.read()
+	if e != nil {
+		return document{}, e
+	}
+	if Revision(b) != revision {
+		return document{}, ErrConflict
+	}
+	if _, e = decode(b, true); e != nil {
+		return document{}, e
+	}
+	plain, e := s.crypt(ctx, b, "")
+	if e != nil {
+		return document{}, e
+	}
+	d, e := decode(plain, false)
+	if e != nil {
+		return document{}, e
+	}
+	if e = change(&d); e != nil {
+		return document{}, e
+	}
+	d.SOPS = nil
+	plain, _ = json.Marshal(d)
+	encrypted, e := s.crypt(ctx, plain, d.Recipient)
+	if e != nil {
+		return document{}, e
+	}
+	if _, e = decode(encrypted, true); e != nil {
+		return document{}, e
+	}
+	check, e := s.crypt(ctx, encrypted, "")
+	if e != nil {
+		return document{}, e
+	}
+	verified, e := decode(check, false)
+	if e != nil || !reflect.DeepEqual(verified, d) {
+		return document{}, errors.New("encrypted store validation failed")
+	}
+	latest, e := s.read()
+	if e != nil {
+		return document{}, e
+	}
+	if Revision(latest) != revision {
+		return document{}, ErrConflict
+	}
+	if e = s.commit(encrypted, false); e != nil {
+		return document{}, e
+	}
+	return d, nil
+}
+
 // Save checks the revision captured when the browser opened. Replacement requires
 // both an exact ID and explicit browser confirmation. No raw values are returned.
 func (s *Store) Save(ctx context.Context, revision string, m Metadata, value, replace string, confirmed bool) (string, error) {
@@ -417,83 +490,90 @@ func (s *Store) Save(ctx context.Context, revision string, m Metadata, value, re
 	if len(value) == 0 || len(value) > 65536 || strings.ContainsRune(value, 0) {
 		return "", errors.New("secret must contain 1–65536 bytes and no NUL characters")
 	}
-	unlock, e := s.lock(ctx)
-	if e != nil {
-		return "", e
-	}
-	defer unlock()
-	b, e := s.read()
-	if e != nil {
-		return "", e
-	}
-	if Revision(b) != revision {
-		return "", ErrConflict
-	}
-	if _, e = decode(b, true); e != nil {
-		return "", e
-	}
-	plain, e := s.crypt(ctx, b, "")
-	if e != nil {
-		return "", e
-	}
-	d, e := decode(plain, false)
-	if e != nil {
-		return "", e
-	}
-	idx := -1
-	for i, c := range d.Credentials {
-		if c.ID == replace {
-			idx = i
+	d, e := s.rewrite(ctx, revision, func(d *document) error {
+		idx := -1
+		for i, c := range d.Credentials {
+			if c.ID == replace {
+				idx = i
+			}
+			if c.Name == m.Name && c.ID != replace {
+				return errors.New("name already exists; explicitly request replacement")
+			}
 		}
-		if c.Name == m.Name && c.ID != replace {
-			return "", errors.New("name already exists; explicitly request replacement")
+		if replace != "" {
+			if idx < 0 {
+				return errors.New("replacement entry not found")
+			}
+			if !confirmed {
+				return errors.New("confirm replacement in the browser")
+			}
+			m.ID = replace
+		} else {
+			m.ID = Token()
 		}
-	}
-	if replace != "" {
-		if idx < 0 {
-			return "", errors.New("replacement entry not found")
+		c := credential{Metadata: m, Value: value}
+		if idx >= 0 {
+			d.Credentials[idx] = c
+		} else {
+			d.Credentials = append(d.Credentials, c)
 		}
-		if !confirmed {
-			return "", errors.New("confirm replacement in the browser")
-		}
-		m.ID = replace
-	} else {
-		m.ID = Token()
-	}
-	c := credential{Metadata: m, Value: value}
-	if idx >= 0 {
-		d.Credentials[idx] = c
-	} else {
-		d.Credentials = append(d.Credentials, c)
-	}
-	d.SOPS = nil
-	plain, _ = json.Marshal(d)
-	encrypted, e := s.crypt(ctx, plain, d.Recipient)
+		return nil
+	})
 	if e != nil {
-		return "", e
-	}
-	if _, e = decode(encrypted, true); e != nil {
-		return "", e
-	}
-	check, e := s.crypt(ctx, encrypted, "")
-	if e != nil {
-		return "", e
-	}
-	verified, e := decode(check, false)
-	if e != nil || !reflect.DeepEqual(verified, d) {
-		return "", errors.New("encrypted store validation failed")
-	}
-	latest, e := s.read()
-	if e != nil {
-		return "", e
-	}
-	if Revision(latest) != revision {
-		return "", ErrConflict
-	}
-	if e = s.commit(encrypted, false); e != nil {
 		return "", e
 	}
 	return "store:" + d.Store + "/" + m.ID, nil
+}
+
+// Edit updates non-secret metadata while preserving the credential's immutable
+// ID and encrypted value.
+func (s *Store) Edit(ctx context.Context, revision string, m Metadata, ref string) (string, error) {
+	if e := m.Validate(); e != nil {
+		return "", e
+	}
+	d, e := s.rewrite(ctx, revision, func(d *document) error {
+		id, e := parseRef(ref, d.Store)
+		if e != nil {
+			return e
+		}
+		idx := -1
+		for i, c := range d.Credentials {
+			if c.ID == id {
+				idx = i
+			}
+			if c.Name == m.Name && c.ID != id {
+				return errors.New("name already exists; choose a different name")
+			}
+		}
+		if idx < 0 {
+			return errors.New("credential no longer exists; run list and try again")
+		}
+		m.ID = id
+		d.Credentials[idx].Metadata = m
+		return nil
+	})
+	if e != nil {
+		return "", e
+	}
+	return "store:" + d.Store + "/" + m.ID, nil
+}
+
+// Delete permanently removes one credential selected by exact reference.
+func (s *Store) Delete(ctx context.Context, revision, ref string) error {
+	_, e := s.rewrite(ctx, revision, func(d *document) error {
+		id, e := parseRef(ref, d.Store)
+		if e != nil {
+			return e
+		}
+		for i, c := range d.Credentials {
+			if c.ID == id {
+				d.Credentials = append(d.Credentials[:i], d.Credentials[i+1:]...)
+				return nil
+			}
+		}
+		return errors.New("credential no longer exists; run list and try again")
+	})
+	return e
 }
 
 // Resolve decrypts the store in memory and returns one credential by exact

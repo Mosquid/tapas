@@ -120,6 +120,95 @@ func TestCLIEntryLifecycle(t *testing.T) {
 	}
 }
 
+func TestCLIEditAndDeleteLifecycle(t *testing.T) {
+	s := testutil.Vault(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	snap, _ := s.Discover()
+	secret := "synthetic-" + vault.Token()
+	ref, e := s.Save(ctx, snap.Revision, vault.Metadata{Name: "Existing", Service: "fixture", Environment: "development", SuggestedEnv: "API_TOKEN"}, secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	type result struct {
+		Status string `json:"status"`
+		Ref    string `json:"ref"`
+	}
+	browserCommand := func(path string, fields url.Values, args ...string) result {
+		t.Helper()
+		full := append([]string{"-test.run=TestCLIHelperProcess", "--"}, args...)
+		full = append(full, "--store", s.Path, "--identity", s.IdentityFile, "--open=false", "--ref", ref)
+		cmd := exec.CommandContext(ctx, os.Args[0], full...)
+		cmd.Env = append(os.Environ(), "TAPAS_TEST_HELPER=1")
+		stdout, e := cmd.StdoutPipe()
+		if e != nil {
+			t.Fatal(e)
+		}
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if e = cmd.Start(); e != nil {
+			t.Fatal(e)
+		}
+		scan := bufio.NewScanner(stdout)
+		if !scan.Scan() {
+			t.Fatal("missing ready event")
+		}
+		var ready struct {
+			Status string `json:"status"`
+			URL    string `json:"url"`
+		}
+		if json.Unmarshal(scan.Bytes(), &ready) != nil || ready.Status != "awaiting_user" {
+			t.Fatal("command did not start its browser transaction", string(scan.Bytes()))
+		}
+		u, e := url.Parse(ready.URL)
+		if e != nil {
+			t.Fatal(e)
+		}
+		fields.Set("token", u.Query().Get("token"))
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+u.Host+path, strings.NewReader(fields.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "http://"+u.Host)
+		resp, e := http.DefaultClient.Do(req)
+		if e != nil {
+			t.Fatal(e)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatal("browser transaction failed", resp.StatusCode)
+		}
+		if !scan.Scan() {
+			t.Fatal("missing final event")
+		}
+		var final result
+		if json.Unmarshal(scan.Bytes(), &final) != nil {
+			t.Fatal("invalid final event", string(scan.Bytes()))
+		}
+		if e = cmd.Wait(); e != nil || stderr.Len() != 0 {
+			t.Fatal("CLI command failed", e, stderr.String())
+		}
+		return final
+	}
+
+	edited := browserCommand("/save", url.Values{"name": {"Edited"}, "description": {"Updated metadata"}, "service": {"fixture"}, "environment": {"staging"}, "suggested_env": {"OTHER_TOKEN"}}, "edit")
+	if edited.Status != "edited" || edited.Ref != ref {
+		t.Fatal("wrong edit result", edited)
+	}
+	m, value, e := s.Resolve(ctx, ref)
+	if e != nil || m.Name != "Edited" || m.Environment != "staging" || value != secret {
+		t.Fatal("CLI edit changed the wrong fields", m, e)
+	}
+
+	deleted := browserCommand("/delete", url.Values{"confirm": {"yes"}}, "delete")
+	if deleted.Status != "deleted" || deleted.Ref != "" {
+		t.Fatal("wrong delete result", deleted)
+	}
+	if _, _, e = s.Resolve(ctx, ref); e == nil {
+		t.Fatal("CLI delete left the credential resolvable")
+	}
+}
+
 func TestCLIRunDeliversCredentialAndExitStatus(t *testing.T) {
 	s := testutil.Vault(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

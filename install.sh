@@ -19,11 +19,20 @@ elif [ -n "${HOME:-}" ]; then
 else
     skill_dir=
 fi
+codex_skill_requested=0
+if [ -n "${TAPAS_CODEX_SKILL_DIR:-}" ]; then
+    codex_skill_dir=$TAPAS_CODEX_SKILL_DIR
+    codex_skill_requested=1
+elif [ -n "${HOME:-}" ]; then
+    codex_skill_dir="$HOME/.agents/skills/agent-secrets"
+else
+    codex_skill_dir=
+fi
 install_skill=1
 
 usage() {
     printf '%s\n' \
-        'Install Tapas and its Claude Code skill.' \
+        'Install Tapas and its agent skill for Claude Code and Codex CLI.' \
         '' \
         'Usage: install.sh [options]' \
         '' \
@@ -31,11 +40,12 @@ usage() {
         '  --version VERSION   Release tag to install (default: latest)' \
         '  --install-dir DIR   Binary directory (default: ~/.local/bin)' \
         '  --skill-dir DIR     Claude skill directory' \
+        '  --codex-skill-dir DIR  Codex skill directory' \
         '  --no-skill          Install only the binary' \
         '  -h, --help          Show this help' \
         '' \
         'The same settings can be supplied through TAPAS_VERSION,' \
-        'TAPAS_INSTALL_DIR, and TAPAS_SKILL_DIR.'
+        'TAPAS_INSTALL_DIR, TAPAS_SKILL_DIR, and TAPAS_CODEX_SKILL_DIR.'
 }
 
 while [ "$#" -gt 0 ]; do
@@ -55,6 +65,12 @@ while [ "$#" -gt 0 ]; do
             skill_dir=$2
             shift 2
             ;;
+        --codex-skill-dir)
+            [ "$#" -ge 2 ] || { printf '%s\n' 'error: --codex-skill-dir requires a value' >&2; exit 2; }
+            codex_skill_dir=$2
+            codex_skill_requested=1
+            shift 2
+            ;;
         --no-skill)
             install_skill=0
             shift
@@ -71,8 +87,17 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+install_codex_skill=0
+if [ "$install_skill" -eq 1 ] && { [ "$codex_skill_requested" -eq 1 ] || command -v codex >/dev/null 2>&1; }; then
+    install_codex_skill=1
+fi
+
 if [ -z "$install_dir" ] || { [ "$install_skill" -eq 1 ] && [ -z "$skill_dir" ]; }; then
     printf '%s\n' 'error: HOME is unset; provide --install-dir and --skill-dir' >&2
+    exit 1
+fi
+if [ "$install_codex_skill" -eq 1 ] && [ -z "$codex_skill_dir" ]; then
+    printf '%s\n' 'error: HOME is unset; provide --codex-skill-dir' >&2
     exit 1
 fi
 
@@ -118,6 +143,7 @@ temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/tapas-install.XXXXXX")
 cleanup() {
     [ -z "${binary_stage:-}" ] || rm -f "$binary_stage"
     [ -z "${skill_stage:-}" ] || rm -f "$skill_stage"
+    [ -z "${codex_skill_stage:-}" ] || rm -f "$codex_skill_stage"
     rm -rf "$temporary_dir"
 }
 trap cleanup EXIT
@@ -156,7 +182,7 @@ archive_root="$temporary_dir/tapas-${os}-${arch}"
 if [ "$install_skill" -eq 1 ]; then
     skill_source="$archive_root/skills/agent-secrets/SKILL.md"
     [ -f "$skill_source" ] || {
-        printf '%s\n' 'error: release archive does not contain the Claude skill' >&2
+        printf '%s\n' 'error: release archive does not contain the agent skill' >&2
         exit 1
     }
 fi
@@ -177,9 +203,23 @@ if [ "$install_skill" -eq 1 ]; then
     skill_stage=
 fi
 
+if [ "$install_codex_skill" -eq 1 ]; then
+    mkdir -p "$codex_skill_dir"
+    codex_skill_stage="$codex_skill_dir/.SKILL.md.new.$$"
+    cp "$skill_source" "$codex_skill_stage"
+    chmod 0644 "$codex_skill_stage"
+    mv -f "$codex_skill_stage" "$codex_skill_dir/SKILL.md"
+    codex_skill_stage=
+fi
+
 printf 'Installed tapas to %s\n' "$install_dir/tapas"
 if [ "$install_skill" -eq 1 ]; then
     printf 'Installed the Claude Code skill to %s\n' "$skill_dir/SKILL.md"
+fi
+if [ "$install_codex_skill" -eq 1 ]; then
+    printf 'Installed the Codex skill to %s\n' "$codex_skill_dir/SKILL.md"
+elif [ "$install_skill" -eq 1 ]; then
+    printf '%s\n' 'Codex CLI not found; skipped the Codex skill.'
 fi
 
 case ":${PATH:-}:" in
@@ -190,4 +230,4 @@ esac
 if ! command -v sops >/dev/null 2>&1; then
     printf '%s\n' 'Note: SOPS is a required runtime dependency; install it before running tapas init.'
 fi
-printf '%s\n' 'Start a new Claude Code session if the agent-secrets skill is not detected.'
+printf '%s\n' 'Restart Claude Code or Codex if the agent-secrets skill is not detected.'

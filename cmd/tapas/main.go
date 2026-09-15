@@ -72,7 +72,7 @@ func run() error {
 		return nil
 	}
 	if len(os.Args) < 2 {
-		return errors.New("usage: tapas init|list|add|preview|run [options]; use --help for flags")
+		return errors.New("usage: tapas init|list|add|edit|delete|preview|run [options]; use --help for flags")
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -151,23 +151,25 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		opened := false
-		if *open {
-			program := "xdg-open"
-			if runtime.GOOS == "darwin" {
-				program = "open"
-			}
-			openCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			cmd := exec.CommandContext(openCtx, program, server.URL())
-			opened = cmd.Run() == nil
-			cancel()
+		return waitForEntry(ctx, server, *open)
+	case "edit":
+		if len(refs) != 1 || refs[0].variable != "" {
+			return errors.New("provide exactly one --ref REF; run tapas list for exact references")
 		}
-		emit(map[string]any{"status": "awaiting_user", "url": server.URL(), "expires_at": server.Expires(), "browser_opened": opened})
-		result := server.Wait(ctx)
-		emit(result)
-		if result.Status == "failed" {
-			return errors.New("server failed")
+		server, e := entry.Start(s, entry.Options{Edit: refs[0].reference, TTL: *ttl})
+		if e != nil {
+			return e
 		}
+		return waitForEntry(ctx, server, *open)
+	case "delete", "remove":
+		if len(refs) != 1 || refs[0].variable != "" {
+			return errors.New("provide exactly one --ref REF; run tapas list for exact references")
+		}
+		server, e := entry.Start(s, entry.Options{Delete: refs[0].reference, TTL: *ttl})
+		if e != nil {
+			return e
+		}
+		return waitForEntry(ctx, server, *open)
 	case "preview":
 		if len(refs) != 1 || refs[0].variable != "" {
 			return errors.New("provide exactly one --ref REF; run tapas list for exact references")
@@ -232,7 +234,28 @@ func run() error {
 			return childStatus(status)
 		}
 	default:
-		return errors.New("unknown command; use init, list, add, preview, or run")
+		return errors.New("unknown command; use init, list, add, edit, delete, preview, or run")
+	}
+	return nil
+}
+
+func waitForEntry(ctx context.Context, server *entry.Server, open bool) error {
+	opened := false
+	if open {
+		program := "xdg-open"
+		if runtime.GOOS == "darwin" {
+			program = "open"
+		}
+		openCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		cmd := exec.CommandContext(openCtx, program, server.URL())
+		opened = cmd.Run() == nil
+		cancel()
+	}
+	emit(map[string]any{"status": "awaiting_user", "url": server.URL(), "expires_at": server.Expires(), "browser_opened": opened})
+	result := server.Wait(ctx)
+	emit(result)
+	if result.Status == "failed" {
+		return errors.New("server failed")
 	}
 	return nil
 }
@@ -244,7 +267,9 @@ const usage = `Usage: tapas <command> [options]
 Vault
   init   Create an identity and encrypted JSON vault
   list   Show credential metadata; never decrypts (alias: discover)
-  add    Open a single-use browser form, save, and exit (alias: serve)
+  add    Add a credential, or rotate its value with --replace ID
+  edit   Update credential metadata without changing its secret value
+  delete  Permanently delete a credential after browser confirmation
   preview  Show a limited credential fragment for format checking
 
 Using a credential
