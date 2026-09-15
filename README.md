@@ -15,9 +15,10 @@ curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | sh
 ```
 
 The installer verifies the release archive against its SHA-256 manifest,
-installs `tapas` to `~/.local/bin`, and installs the skill to
-`~/.claude/skills/agent-secrets`. Both locations can be overridden, and a
-specific release can be pinned:
+installs `tapas` to `~/.local/bin`, and installs the Agent Secrets skill for
+Claude Code. When `codex` is on `PATH`, it also installs the same skill for
+Codex CLI. The locations can be overridden, and a specific release can be
+pinned:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | \
@@ -32,10 +33,10 @@ tapas version
 tapas init --name personal
 ```
 
-### Install the Claude Code skill
+### Install the agent skill
 
 The standard installer installs both the `tapas` executable and the Agent
-Secrets skill. By default, the skill is written to:
+Secrets skill. For Claude Code, the skill is written to:
 
 ```text
 ~/.claude/skills/agent-secrets/SKILL.md
@@ -49,6 +50,18 @@ automatically when a task needs a credential, or you can invoke it directly:
 /agent-secrets
 ```
 
+If Codex CLI is installed, the installer detects `codex` on `PATH` and also
+writes the skill to its user-scoped location:
+
+```text
+~/.agents/skills/agent-secrets/SKILL.md
+```
+
+Codex detects skill changes automatically; restart it if the skill does not
+appear. Override this location with `--codex-skill-dir <path>` or
+`TAPAS_CODEX_SKILL_DIR`. The `--no-skill` option skips both Claude Code and
+Codex skill installation. See the [official OpenAI skill locations](https://developers.openai.com/codex/skills/#where-to-save-skills).
+
 To install or update only the skill, without running the binary installer:
 
 ```sh
@@ -56,6 +69,11 @@ mkdir -p "$HOME/.claude/skills/agent-secrets"
 curl -fsSL \
   https://raw.githubusercontent.com/Mosquid/tapas/main/skills/agent-secrets/SKILL.md \
   -o "$HOME/.claude/skills/agent-secrets/SKILL.md"
+
+mkdir -p "$HOME/.agents/skills/agent-secrets"
+curl -fsSL \
+  https://raw.githubusercontent.com/Mosquid/tapas/main/skills/agent-secrets/SKILL.md \
+  -o "$HOME/.agents/skills/agent-secrets/SKILL.md"
 ```
 
 The skill expects `tapas` and SOPS to be available on `PATH`; installing the
