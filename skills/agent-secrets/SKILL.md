@@ -155,6 +155,27 @@ saves or cancels. Run it as a foreground command and wait for it.
 To rotate or replace an existing credential, pass `--replace <id>` with the
 exact `id` from `tapas list`. The user must confirm the replacement in the form.
 
+## Edit or delete a credential
+
+Use `edit` when only the non-secret metadata needs to change. The local form is
+prefilled and never contains the saved secret value:
+
+```sh
+tapas edit --ref <ref>
+```
+
+Use `delete` only when the user has asked to remove the credential:
+
+```sh
+tapas delete --ref <ref>
+```
+
+Deletion opens a local confirmation page and blocks in the foreground. Tell the
+user which credential is awaiting confirmation. Never select the confirmation
+checkbox or submit the deletion on the user's behalf. A final `deleted` result
+means the reference is no longer available; `cancelled` and `expired` leave the
+vault unchanged.
+
 ## First use on a machine
 
 If `tapas list` says there is no vault, run `tapas init --name personal` once.

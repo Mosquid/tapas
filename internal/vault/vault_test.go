@@ -75,6 +75,66 @@ func TestRoundTripReplacementAndDiscovery(t *testing.T) {
 		t.Fatal("staging artifacts retained")
 	}
 }
+
+func TestEditAndDeleteCredential(t *testing.T) {
+	s := testutil.Vault(t)
+	ctx := context.Background()
+	snap, _ := s.Discover()
+	secret := "synthetic-" + vault.Token()
+	ref, e := s.Save(ctx, snap.Revision, metadata(), secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	snap, _ = s.Discover()
+	second := metadata()
+	second.Name = "Second fixture"
+	secondRef, e := s.Save(ctx, snap.Revision, second, "another-secret", "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	snap, _ = s.Discover()
+	edited := metadata()
+	edited.Name = "Edited fixture"
+	edited.Description = "Updated without replacing the value"
+	edited.Service = "other-fixture"
+	edited.Environment = "staging"
+	edited.SuggestedEnv = "OTHER_TOKEN"
+	editedRef, e := s.Edit(ctx, snap.Revision, edited, ref)
+	if e != nil || editedRef != ref {
+		t.Fatal("metadata edit failed or changed the reference", editedRef, e)
+	}
+	m, value, e := s.Resolve(ctx, ref)
+	if e != nil || m.Name != edited.Name || m.Description != edited.Description || m.Service != edited.Service || m.Environment != edited.Environment || m.SuggestedEnv != edited.SuggestedEnv || value != secret {
+		t.Fatal("edit changed the wrong fields", m, e)
+	}
+
+	stale := snap.Revision
+	snap, _ = s.Discover()
+	if _, e = s.Edit(ctx, stale, edited, ref); !errors.Is(e, vault.ErrConflict) {
+		t.Fatal("stale edit accepted", e)
+	}
+	duplicate := second
+	duplicate.Name = edited.Name
+	if _, e = s.Edit(ctx, snap.Revision, duplicate, secondRef); e == nil {
+		t.Fatal("edit accepted a duplicate name")
+	}
+
+	if e = s.Delete(ctx, snap.Revision, ref); e != nil {
+		t.Fatal("delete failed", e)
+	}
+	after, e := s.Discover()
+	if e != nil || len(after.Credentials) != 1 || after.Credentials[0].ID != strings.TrimPrefix(secondRef, "store:test/") {
+		t.Fatal("deleted credential remains discoverable", e)
+	}
+	if _, _, e = s.Resolve(ctx, ref); e == nil {
+		t.Fatal("deleted credential still resolves")
+	}
+	if e = s.Delete(ctx, after.Revision, ref); e == nil {
+		t.Fatal("missing credential was deleted twice")
+	}
+}
 func TestConcurrentSave(t *testing.T) {
 	s := testutil.Vault(t)
 	snap, _ := s.Discover()

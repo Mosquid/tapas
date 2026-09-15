@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if .ReplaceName}}Replace credential{{else}}Add credential{{end}} · Agent Secrets</title>
+  <title>{{if .Delete}}Delete credential{{else if .Edit}}Edit credential{{else if .Replace}}Replace credential{{else}}Add credential{{end}} · Agent Secrets</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -11,12 +11,23 @@
     <section class="panel" aria-labelledby="page-title">
       <header>
         <div class="brand"><span aria-hidden="true"></span>Agent Secrets</div>
-        <h1 id="page-title">{{if .ReplaceName}}Replace credential{{else}}Add credential{{end}}</h1>
-        <p>The value is encrypted locally. Your agent receives only its reference.</p>
+        <h1 id="page-title">{{if .Delete}}Delete credential{{else if .Edit}}Edit credential{{else if .Replace}}Replace credential{{else}}Add credential{{end}}</h1>
+        <p>{{if .Delete}}This permanently removes the saved credential.{{else if .Edit}}Update its details without changing the secret value.{{else}}The value is encrypted locally. Your agent receives only its reference.{{end}}</p>
       </header>
 
       {{if .Reason}}<p class="reason"><strong>Requested for</strong> {{.Reason}}</p>{{end}}
 
+      {{if .Delete}}
+      <form method="post" action="/delete" autocomplete="off">
+        <input type="hidden" name="token" value="{{.Token}}">
+        <div class="delete-summary">
+          <strong>{{.Metadata.Name}}</strong>
+          <span>{{.Metadata.Service}} · {{.Metadata.Environment}}</span>
+        </div>
+        <label class="confirm danger"><input type="checkbox" name="confirm" value="yes" required><span>I understand this permanently deletes <strong>{{.TargetName}}</strong></span></label>
+        <div class="actions"><button class="danger-button" type="submit">Delete credential</button><button class="secondary" type="submit" formaction="/cancel" formnovalidate>Cancel</button></div>
+      </form>
+      {{else}}
       <form method="post" action="/save" autocomplete="off">
         <input type="hidden" name="token" value="{{.Token}}">
         <div class="field">
@@ -35,13 +46,14 @@
           <label for="suggested_env">Environment variable <span>Optional</span></label>
           <input class="mono" id="suggested_env" name="suggested_env" value="{{.Metadata.SuggestedEnv}}" maxlength="128" placeholder="API_TOKEN" spellcheck="false">
         </div>
-        <div class="field">
+        {{if not .Edit}}<div class="field">
           <label for="value">Secret value</label>
           <input type="password" id="value" name="value" autocomplete="new-password" required>
-        </div>
-        {{if .ReplaceName}}<label class="confirm"><input type="checkbox" name="confirm" value="yes" required><span>Replace the saved value for <strong>{{.ReplaceName}}</strong></span></label>{{end}}
-        <div class="actions"><button type="submit">Save credential</button><button class="secondary" type="submit" formaction="/cancel" formnovalidate>Cancel</button></div>
+        </div>{{end}}
+        {{if .Replace}}<label class="confirm"><input type="checkbox" name="confirm" value="yes" required><span>Replace the saved value for <strong>{{.TargetName}}</strong></span></label>{{end}}
+        <div class="actions"><button type="submit">{{if .Edit}}Save changes{{else}}Save credential{{end}}</button><button class="secondary" type="submit" formaction="/cancel" formnovalidate>Cancel</button></div>
       </form>
+      {{end}}
     </section>
   </main>
 </body>

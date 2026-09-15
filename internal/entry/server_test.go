@@ -145,3 +145,75 @@ func TestReplacementRequiresConfirmation(t *testing.T) {
 		t.Fatal("confirmed save failed", w.Body.String())
 	}
 }
+
+func TestEditPreservesValueAndDeleteRequiresConfirmation(t *testing.T) {
+	store := testutil.Vault(t)
+	snap, _ := store.Discover()
+	secret := "synthetic-" + vault.Token()
+	ref, e := store.Save(context.Background(), snap.Revision, vault.Metadata{Name: "Existing", Service: "fixture", Environment: "development", SuggestedEnv: "API_TOKEN"}, secret, "", false)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	edit, e := Start(store, Options{Edit: ref, TTL: time.Minute})
+	if e != nil {
+		t.Fatal(e)
+	}
+	editResult := make(chan Result, 1)
+	go func() { editResult <- edit.Wait(context.Background()) }()
+	resp, e := http.Get(edit.URL())
+	if e != nil {
+		t.Fatal(e)
+	}
+	html, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !bytes.Contains(html, []byte("Edit credential")) || bytes.Contains(html, []byte(`name="value"`)) {
+		t.Fatal("edit form exposes a secret-value field")
+	}
+	if w := submit(edit, "/save", edit.token, "http://"+edit.host, edit.host, url.Values{"name": {"Edited"}, "service": {"fixture"}, "environment": {"staging"}, "value": {"unexpected"}}); w.Code != http.StatusBadRequest {
+		t.Fatal("metadata edit accepted a secret value", w.Code)
+	}
+	fields := url.Values{"name": {"Edited"}, "description": {"New details"}, "service": {"fixture"}, "environment": {"staging"}, "suggested_env": {"OTHER_TOKEN"}}
+	if w := submit(edit, "/save", edit.token, "http://"+edit.host, edit.host, fields); w.Code != http.StatusOK {
+		t.Fatal("edit failed", w.Code, w.Body.String())
+	}
+	if result := <-editResult; result.Status != "edited" || result.Ref != ref {
+		t.Fatal("wrong edit result", result)
+	}
+	m, value, e := store.Resolve(context.Background(), ref)
+	if e != nil || m.Name != "Edited" || m.Description != "New details" || m.Environment != "staging" || m.SuggestedEnv != "OTHER_TOKEN" || value != secret {
+		t.Fatal("edit did not preserve the credential value", m, e)
+	}
+
+	remove, e := Start(store, Options{Delete: ref, TTL: time.Minute})
+	if e != nil {
+		t.Fatal(e)
+	}
+	removeResult := make(chan Result, 1)
+	go func() { removeResult <- remove.Wait(context.Background()) }()
+	resp, e = http.Get(remove.URL())
+	if e != nil {
+		t.Fatal(e)
+	}
+	html, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !bytes.Contains(html, []byte("Delete credential")) || !bytes.Contains(html, []byte("permanently deletes")) || bytes.Contains(html, []byte(`name="value"`)) {
+		t.Fatal("delete confirmation is incomplete")
+	}
+	if w := submit(remove, "/delete", remove.token, "http://"+remove.host, remove.host, url.Values{"confirm": {"yes"}, "name": {"unexpected"}}); w.Code != http.StatusBadRequest {
+		t.Fatal("delete accepted unexpected fields", w.Code)
+	}
+	if w := submit(remove, "/delete", remove.token, "http://"+remove.host, remove.host, nil); w.Code != http.StatusBadRequest {
+		t.Fatal("delete did not require confirmation", w.Code)
+	}
+	if w := submit(remove, "/delete", remove.token, "http://"+remove.host, remove.host, url.Values{"confirm": {"yes"}}); w.Code != http.StatusOK {
+		t.Fatal("confirmed delete failed", w.Code, w.Body.String())
+	}
+	if result := <-removeResult; result.Status != "deleted" || result.Ref != "" {
+		t.Fatal("wrong delete result", result)
+	}
+	snap, e = store.Discover()
+	if e != nil || len(snap.Credentials) != 0 {
+		t.Fatal("deleted credential remains in the vault", e)
+	}
+}
