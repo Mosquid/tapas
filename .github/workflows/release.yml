@@ -26,7 +26,7 @@ jobs:
       contents: write
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      SOPS_VERSION: "3.8.1"
+      SOPS_VERSION: "3.13.3"
 
     steps:
       - name: Check out release tag
@@ -91,15 +91,32 @@ jobs:
           mkdir -p "$test_root/fake bin"
           printf '%s\n' '#!/bin/sh' 'exit 0' > "$test_root/fake bin/codex"
           chmod +x "$test_root/fake bin/codex"
-          PATH="$test_root/fake bin:$PATH" \
+          mkdir -p "$test_root/sops-release"
+          sops_asset="sops-v${SOPS_VERSION}.linux.amd64"
+          printf '%s\n' '#!/bin/sh' 'echo installed-sops' > "$test_root/sops-release/$sops_asset"
+          chmod +x "$test_root/sops-release/$sops_asset"
+          sha256sum "$test_root/sops-release/$sops_asset" | \
+            sed "s|$test_root/sops-release/||" > "$test_root/sops-release/sops-v${SOPS_VERSION}.checksums.txt"
+          PATH="$test_root/fake bin:/usr/bin:/bin" \
           HOME="$test_root/home with spaces" \
           TAPAS_ASSET_BASE_URL="file://$PWD/dist" \
+          TAPAS_SOPS_ASSET_BASE_URL="file://$test_root/sops-release" \
           TAPAS_INSTALL_DIR="$test_root/bin with spaces" \
           TAPAS_SKILL_DIR="$test_root/skill with spaces" \
             sh ./install.sh
           "$test_root/bin with spaces/tapas" version | grep -Fx "tapas ${RELEASE_TAG#v}"
+          "$test_root/bin with spaces/sops" | grep -Fx installed-sops
           test -f "$test_root/skill with spaces/SKILL.md"
           test -f "$test_root/home with spaces/.agents/skills/agent-secrets/SKILL.md"
+
+          sops_checksum=$(sha256sum "$test_root/bin with spaces/sops")
+          PATH="/usr/bin:/bin" \
+          HOME="$test_root/home with spaces" \
+          TAPAS_ASSET_BASE_URL="file://$PWD/dist" \
+          TAPAS_SOPS_ASSET_BASE_URL="file://$test_root/does-not-exist" \
+          TAPAS_INSTALL_DIR="$test_root/bin with spaces" \
+            sh ./install.sh --no-skill
+          test "$(sha256sum "$test_root/bin with spaces/sops")" = "$sops_checksum"
 
           bad_release=$(mktemp -d)
           cp "dist/tapas-linux-amd64.tar.gz" "$bad_release/"

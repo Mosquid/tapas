@@ -10,30 +10,28 @@ for Claude Code and Codex CLI.
 
 ## Install
 
-Tapas supports macOS and Linux on arm64 and amd64.
+Tapas supports macOS and Linux on arm64 and amd64. Install it with:
 
-1. Install [SOPS](https://github.com/getsops/sops#installation) and make sure
-   `sops` is on your `PATH`. No separate age CLI is needed.
-2. Install Tapas:
+```sh
+curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | sh
+```
 
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | sh
-   ```
+The installer verifies downloaded checksums and installs Tapas and its SOPS
+runtime dependency to `~/.local/bin`, without `sudo`. It leaves an existing SOPS
+installation untouched. It also installs the skill for Claude Code and, if
+`codex` is on your `PATH`, Codex CLI. No separate age CLI is needed.
 
-   The installer verifies the download's SHA-256 checksum and installs to
-   `~/.local/bin`, without `sudo`. It also installs the skill for Claude Code
-   and, if `codex` is on your `PATH`, Codex CLI.
-3. Make sure the binary is on your `PATH`, then create your personal vault:
+Make sure the binary directory is on your `PATH`, then create your personal vault:
 
-   ```sh
-   export PATH="$HOME/.local/bin:$PATH"
-   tapas version
-   tapas init --name personal
-   ```
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+tapas version
+tapas init --name personal
+```
 
-   Add the `PATH` line to your shell configuration if needed for future sessions.
-   Initialization prints the path to your private age key. **Back up that key**:
-   you need it to decrypt the vault. Never commit it or share it in chat.
+Add the `PATH` line to your shell configuration if needed for future sessions.
+Initialization prints the path to your private age key. **Back up that key**:
+you need it to decrypt the vault. Never commit it or share it in chat.
 
 The personal vault is available from any working directory. See
 [advanced usage](docs/usage.md) for custom locations and installer options.

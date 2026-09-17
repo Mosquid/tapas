@@ -5,18 +5,22 @@ Start with the [README](../README.md) for installation and a first credential.
 ## Configuration and storage
 
 The installer accepts `--version <tag>` to pin a release, `--install-dir <path>`
-to choose a binary directory, and `--no-skill` to skip agent skill installation.
+to choose a binary directory, `--no-skill` to skip agent skill installation,
+and `--no-sops` to manage the SOPS runtime dependency yourself.
 Pass options after `sh -s --`, for example:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Mosquid/tapas/main/install.sh | \
-  sh -s -- --install-dir "$HOME/bin" --no-skill
+  sh -s -- --install-dir "$HOME/bin" --no-skill --no-sops
 ```
 
 By default, the skill is installed to `~/.claude/skills/agent-secrets`. If `codex`
 is on `PATH`, it is also installed to `~/.agents/skills/agent-secrets`. Override
 these locations with `--skill-dir <path>` and `--codex-skill-dir <path>`;
 the latter explicitly requests Codex skill installation even if it isn't detected.
+When SOPS is missing, the installer downloads a pinned official SOPS binary,
+verifies it against the upstream checksum file, and places it beside `tapas`.
+It does not replace a SOPS executable already on `PATH` or in the install directory.
 
 The default vault is `tapas/vault.sops.json` inside your OS user configuration
 directory. The private key is `tapas/age-identity.txt` in the same directory.

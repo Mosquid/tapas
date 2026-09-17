@@ -5,6 +5,7 @@ umask 022
 
 repository="Mosquid/tapas"
 requested_version="${TAPAS_VERSION:-latest}"
+sops_version="3.13.3"
 if [ -n "${TAPAS_INSTALL_DIR:-}" ]; then
     install_dir=$TAPAS_INSTALL_DIR
 elif [ -n "${HOME:-}" ]; then
@@ -29,10 +30,11 @@ else
     codex_skill_dir=
 fi
 install_skill=1
+install_sops=1
 
 usage() {
     printf '%s\n' \
-        'Install Tapas and its agent skill for Claude Code and Codex CLI.' \
+        'Install Tapas, SOPS, and the agent skill for Claude Code and Codex CLI.' \
         '' \
         'Usage: install.sh [options]' \
         '' \
@@ -41,7 +43,8 @@ usage() {
         '  --install-dir DIR   Binary directory (default: ~/.local/bin)' \
         '  --skill-dir DIR     Claude skill directory' \
         '  --codex-skill-dir DIR  Codex skill directory' \
-        '  --no-skill          Install only the binary' \
+        '  --no-skill          Do not install agent skills' \
+        '  --no-sops           Do not install SOPS when it is missing' \
         '  -h, --help          Show this help' \
         '' \
         'The same settings can be supplied through TAPAS_VERSION,' \
@@ -73,6 +76,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-skill)
             install_skill=0
+            shift
+            ;;
+        --no-sops)
+            install_sops=0
             shift
             ;;
         -h|--help)
@@ -126,6 +133,13 @@ case "$(uname -m)" in
         ;;
 esac
 
+install_sops_now=0
+if [ "$install_sops" -eq 1 ] && \
+   ! command -v sops >/dev/null 2>&1 && \
+   ! [ -x "$install_dir/sops" ]; then
+    install_sops_now=1
+fi
+
 asset="tapas-${os}-${arch}.tar.gz"
 if [ -n "${TAPAS_ASSET_BASE_URL:-}" ]; then
     asset_base_url=${TAPAS_ASSET_BASE_URL%/}
@@ -142,6 +156,7 @@ fi
 temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/tapas-install.XXXXXX")
 cleanup() {
     [ -z "${binary_stage:-}" ] || rm -f "$binary_stage"
+    [ -z "${sops_stage:-}" ] || rm -f "$sops_stage"
     [ -z "${skill_stage:-}" ] || rm -f "$skill_stage"
     [ -z "${codex_skill_stage:-}" ] || rm -f "$codex_skill_stage"
     rm -rf "$temporary_dir"
@@ -173,6 +188,35 @@ fi
     exit 1
 }
 
+if [ "$install_sops_now" -eq 1 ]; then
+    sops_asset="sops-v${sops_version}.${os}.${arch}"
+    if [ -n "${TAPAS_SOPS_ASSET_BASE_URL:-}" ]; then
+        sops_asset_base_url=${TAPAS_SOPS_ASSET_BASE_URL%/}
+    else
+        sops_asset_base_url="https://github.com/getsops/sops/releases/download/v${sops_version}"
+    fi
+    sops_download="$temporary_dir/$sops_asset"
+    sops_checksums="$temporary_dir/sops-checksums.txt"
+    printf 'SOPS not found; downloading %s\n' "$sops_asset"
+    curl -fsSL "$sops_asset_base_url/$sops_asset" -o "$sops_download"
+    curl -fsSL "$sops_asset_base_url/sops-v${sops_version}.checksums.txt" -o "$sops_checksums"
+
+    sops_expected=$(awk -v name="$sops_asset" '$2 == name || $2 == "*" name { print $1; exit }' "$sops_checksums")
+    [ -n "$sops_expected" ] || {
+        printf 'error: %s is absent from the SOPS checksums file\n' "$sops_asset" >&2
+        exit 1
+    }
+    if command -v sha256sum >/dev/null 2>&1; then
+        sops_actual=$(sha256sum "$sops_download" | awk '{ print $1 }')
+    else
+        sops_actual=$(shasum -a 256 "$sops_download" | awk '{ print $1 }')
+    fi
+    [ "$sops_actual" = "$sops_expected" ] || {
+        printf '%s\n' 'error: downloaded SOPS binary checksum does not match' >&2
+        exit 1
+    }
+fi
+
 tar -xzf "$archive" -C "$temporary_dir"
 archive_root="$temporary_dir/tapas-${os}-${arch}"
 [ -x "$archive_root/tapas" ] || {
@@ -188,6 +232,13 @@ if [ "$install_skill" -eq 1 ]; then
 fi
 
 mkdir -p "$install_dir"
+if [ "$install_sops_now" -eq 1 ]; then
+    sops_stage="$install_dir/.sops.new.$$"
+    cp "$sops_download" "$sops_stage"
+    chmod 0755 "$sops_stage"
+    mv -f "$sops_stage" "$install_dir/sops"
+    sops_stage=
+fi
 binary_stage="$install_dir/.tapas.new.$$"
 cp "$archive_root/tapas" "$binary_stage"
 chmod 0755 "$binary_stage"
@@ -213,6 +264,9 @@ if [ "$install_codex_skill" -eq 1 ]; then
 fi
 
 printf 'Installed tapas to %s\n' "$install_dir/tapas"
+if [ "$install_sops_now" -eq 1 ]; then
+    printf 'Installed SOPS %s to %s\n' "$sops_version" "$install_dir/sops"
+fi
 if [ "$install_skill" -eq 1 ]; then
     printf 'Installed the Claude Code skill to %s\n' "$skill_dir/SKILL.md"
 fi
@@ -227,7 +281,9 @@ case ":${PATH:-}:" in
     *) printf 'Note: add %s to PATH before running tapas.\n' "$install_dir" ;;
 esac
 
-if ! command -v sops >/dev/null 2>&1; then
-    printf '%s\n' 'Note: SOPS is a required runtime dependency; install it before running tapas init.'
+if [ "$install_sops" -eq 0 ] && \
+   ! command -v sops >/dev/null 2>&1 && \
+   ! [ -x "$install_dir/sops" ]; then
+    printf '%s\n' 'Note: SOPS installation was skipped; install it before running tapas init.'
 fi
 printf '%s\n' 'Restart Claude Code or Codex if the agent-secrets skill is not detected.'
